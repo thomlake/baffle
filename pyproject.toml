@@ -1,0 +1,7 @@
+[project]
+name = "baffle"
+version = "0.1.0"
+description = "A transactional rules engine for deterministic turn-based simulations"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
