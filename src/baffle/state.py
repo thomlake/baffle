@@ -296,6 +296,13 @@ class World:
         )
 
     # -- writes -----------------------------------------------------------
+    #
+    # Each write returns what it displaced, which it had to compute anyway in order to
+    # record the mutation. Handing it back rather than dropping it is what lets an
+    # operation report a previous value without reading the component a second time --
+    # and an ``after`` rule learn what changed without scanning the record stream.
+    # :data:`MISSING` means there was nothing there, which is how a create is told from
+    # a replace.
 
     def set(
         self,
@@ -304,8 +311,8 @@ class World:
         value: JsonValue,
         *,
         create: bool = True,
-    ) -> None:
-        """Replace the value at `key`, introducing it when absent."""
+    ) -> Any:
+        """Replace the value at `key`, introducing it when absent. Returns the old one."""
         validate_key(key)
         components = self._own(entity_id)
         value = normalize_value(value)
@@ -318,8 +325,10 @@ class World:
         self._record(
             entity_id, key, old, value, "insert" if old is MISSING else "replace"
         )
+        return old
 
-    def unset(self, entity_id: EntityId, key: ComponentPath) -> None:
+    def unset(self, entity_id: EntityId, key: ComponentPath) -> Any:
+        """Drop `key`. Returns the value that was there."""
         validate_key(key)
         components = self._own(entity_id)
         if key not in components:
@@ -328,8 +337,10 @@ class World:
             )
         old = components.pop(key)
         self._record(entity_id, key, old, MISSING, "remove")
+        return old
 
     def create(self, entity_id: EntityId, components: Mapping[str, JsonValue]) -> None:
+        """Add an entity. Displaces nothing, so there is nothing to return."""
         if entity_id in self._entities:
             raise EngineFault("Entity already exists", entity=entity_id)
         owned = normalize_components(components)
@@ -337,13 +348,15 @@ class World:
         self._owned.add(entity_id)
         self._record(entity_id, WHOLE_ENTITY, MISSING, owned, "insert")
 
-    def delete(self, entity_id: EntityId) -> None:
+    def delete(self, entity_id: EntityId) -> Components:
+        """Remove an entity. Returns everything it held."""
         try:
             old = self._entities.pop(entity_id)
         except KeyError:
             raise EngineFault("No such entity", entity=entity_id) from None
         self._owned.discard(entity_id)
         self._record(entity_id, WHOLE_ENTITY, old, MISSING, "remove")
+        return old
 
     # -- boundary ---------------------------------------------------------
 

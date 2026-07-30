@@ -90,11 +90,14 @@ class CreateEntity(NewEntityEvent):
 
 
 class DeleteEntity(ExistingEntityEvent):
-    """Remove an entity and everything it holds."""
+    """Remove an entity and everything it holds.
+
+    Reports the components it held, which is what a reaction to a death needs in order
+    to drop what the thing was carrying.
+    """
 
     def apply(self, world: World) -> OperationResult:
-        world.delete(self.entity)
-        return NO_EFFECT
+        return Effect({"components": world.delete(self.entity)})
 
 
 class MoveEntity(ExistingEntityEvent):
@@ -116,6 +119,9 @@ class MoveEntity(ExistingEntityEvent):
     destination: Vec2
 
     def apply(self, world: World) -> OperationResult:
+        # Read rather than take `set`'s displaced value, which would be MISSING for an
+        # entity that has no position -- turning "you cannot move a positionless thing"
+        # from a fault into a silent create.
         origin = world.value(self.entity, "position")
         world.set(self.entity, "position", self.destination)
         return Effect({"origin": origin, "destination": self.destination})
@@ -127,14 +133,20 @@ class MoveEntity(ExistingEntityEvent):
 
 
 class SetComponent(ComponentEvent):
-    """Replace a component value, introducing it when absent."""
+    """Replace a component value, introducing it when absent.
+
+    ``previous`` is :data:`~baffle.state.MISSING` when the component did not exist, which
+    is how an ``after`` rule tells a create from a replace.
+    """
 
     value: JsonValue
     create: bool = True
 
     def apply(self, world: World) -> OperationResult:
-        world.set(self.entity, self.component, self.value, create=self.create)
-        return NO_EFFECT
+        previous = world.set(
+            self.entity, self.component, self.value, create=self.create
+        )
+        return Effect({"previous": previous, "current": self.value})
 
 
 class RemoveComponent(ComponentEvent):
@@ -143,8 +155,7 @@ class RemoveComponent(ComponentEvent):
     def apply(self, world: World) -> OperationResult:
         if self.component not in world[self.entity]:
             return Failure("component_missing", self._context())
-        world.unset(self.entity, self.component)
-        return NO_EFFECT
+        return Effect({"previous": world.unset(self.entity, self.component)})
 
 
 class IncrementComponent(ComponentEvent):
@@ -203,8 +214,9 @@ class AppendToList(ComponentEvent):
         target = world.value(self.entity, self.component)
         if not isinstance(target, tuple):
             return Failure("not_a_list", self._context())
-        world.set(self.entity, self.component, (*target, self.value))
-        return NO_EFFECT
+        current = (*target, self.value)
+        world.set(self.entity, self.component, current)
+        return Effect({"previous": target, "current": current})
 
 
 class ExtendList(ComponentEvent):
@@ -216,8 +228,9 @@ class ExtendList(ComponentEvent):
         target = world.value(self.entity, self.component)
         if not isinstance(target, tuple):
             return Failure("not_a_list", self._context())
-        world.set(self.entity, self.component, (*target, *self.values))
-        return NO_EFFECT
+        current = (*target, *self.values)
+        world.set(self.entity, self.component, current)
+        return Effect({"previous": target, "current": current})
 
 
 class RemoveValue(ComponentEvent):
@@ -233,6 +246,13 @@ class RemoveValue(ComponentEvent):
             index = target.index(self.value)
         except ValueError:
             return Failure("value_absent", {**self._context(), "value": self.value})
-        remaining = (*target[:index], *target[index + 1 :])
-        world.set(self.entity, self.component, remaining)
-        return Effect({"removed": self.value, "index": index})
+        current = (*target[:index], *target[index + 1 :])
+        world.set(self.entity, self.component, current)
+        return Effect(
+            {
+                "removed": self.value,
+                "index": index,
+                "previous": target,
+                "current": current,
+            }
+        )

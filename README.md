@@ -81,6 +81,18 @@ FAIL      React to a discard. Sees the world from before the transaction.
 
 `AfterRule` and `FailRule` produce new root events. Neither can refuse — the transaction has already been decided.
 
+Choosing a phase is choosing a **transaction boundary**, not a style:
+
+| | Boundary | Choose it when |
+|---|---|---|
+| `replace` | same transaction, rewritten in place | the two events are one intent at different stages |
+| `before` | same transaction, required | the consequence failing should retract the cause |
+| `after` | a **new** root transaction | the consequence should stand or fail on its own |
+
+That last row is easy to reach for by mistake. An `after` rule's output gets its own working copy and its own commit, so the event it reacted to has already committed by the time it runs — and `result.root.committed` answers for that event, not for the consequence. If a `Step` spends stamina and an `after` rule then emits the `MoveEntity`, a move into a wall leaves the stamina spent and reports `committed=True`. Put it in `replace` and the whole thing rolls back as one.
+
+Independence is sometimes exactly right, though: damage on arriving at a trap belongs in `after`, because a hit that clamps at zero hp and refuses should not undo the move that triggered it.
+
 A `before` rule refuses by returning a `Failure`, or by *yielding* one if it is a generator (where `return` would be swallowed). Producing events and a refusal together is incoherent and rejected.
 
 ## Ordering is declared
@@ -178,13 +190,20 @@ That split is why `MoveEntity` carries a concrete `destination` rather than a di
 
 The same rule decides which built-in operations exist. `AppendToList(value=x)` and `RemoveValue(value=x)` are specified by value, so they mean the same thing at emission and at execution. An operation specified by *position* would not — index 2 is whatever happens to be there when it runs — so there is none.
 
-| Operation | Target |
-|---|---|
-| `CreateEntity`, `DeleteEntity` | an entity |
-| `MoveEntity` | `position`, reporting where it came from |
-| `SetComponent`, `RemoveComponent` | any component |
-| `IncrementComponent` | an integer, optionally clamped |
-| `AppendToList`, `ExtendList`, `RemoveValue` | a tuple component |
+| Operation | Target | `details` |
+|---|---|---|
+| `CreateEntity` | an entity | — |
+| `DeleteEntity` | an entity | `components` |
+| `MoveEntity` | `position` | `origin`, `destination` |
+| `SetComponent` | any component | `previous`, `current` |
+| `RemoveComponent` | any component | `previous` |
+| `IncrementComponent` | an integer, optionally clamped | `previous`, `current` |
+| `AppendToList`, `ExtendList` | a tuple component | `previous`, `current` |
+| `RemoveValue` | a tuple component | `removed`, `index`, `previous`, `current` |
+
+The `details` column follows one rule: **report what the operation computed, not what the event already says.** `CreateEntity` is the only blank, because its components come straight off the event and nothing is displaced. Everywhere else there is a previous value that only exists because the operation looked — and since every write already computes it in order to record the mutation, `World.set`, `unset`, and `delete` hand it back rather than dropping it. `SetComponent`'s `previous` is `MISSING` when it introduced the component, which is how a reaction tells a create from a replace.
+
+The alternative would be to make `after` rules read old values out of the `Mutation` records. They receive `details` as an argument, so that would mean scanning a log for something already in hand.
 
 `IncrementComponent` is relative rather than absolute, so it means the same thing however much a sibling prerequisite changed the value in between. That is what it has over reading a component and setting the sum — and it is worth knowing that the tuple operations, which do read and write a whole value, are last-write-wins if two rules edit one tuple in a single transaction.
 
