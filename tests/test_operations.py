@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from baffle import (
+    MISSING,
     AppendToList,
     CreateEntity,
     DeleteEntity,
@@ -184,10 +185,17 @@ def test_removing_a_falsy_component_still_works():
 def test_append_and_extend_grow_a_sequence():
     world = build(player={"bag": ("rope",)})
 
-    run(AppendToList(entity="player", component="bag", value="torch"), world)
-    run(ExtendList(entity="player", component="bag", values=("map", "key")), world)
+    appended = run(AppendToList(entity="player", component="bag", value="torch"), world)
+    extended = run(
+        ExtendList(entity="player", component="bag", values=("map", "key")), world
+    )
 
     assert world.value("player", "bag") == ("rope", "torch", "map", "key")
+    assert appended.details == {"previous": ("rope",), "current": ("rope", "torch")}
+    assert extended.details == {
+        "previous": ("rope", "torch"),
+        "current": ("rope", "torch", "map", "key"),
+    }
 
 
 def test_append_adds_a_tuple_as_one_element():
@@ -205,7 +213,12 @@ def test_remove_takes_the_first_match_and_rejects_when_absent():
 
     result = run(RemoveValue(entity="player", component="bag", value="rope"), world)
     assert isinstance(result, Effect)
-    assert result.details == {"removed": "rope", "index": 0}
+    assert result.details == {
+        "removed": "rope",
+        "index": 0,
+        "previous": ("rope", "torch", "rope"),
+        "current": ("torch", "rope"),
+    }
     assert world.value("player", "bag") == ("torch", "rope")
 
     result = run(RemoveValue(entity="player", component="bag", value="anvil"), world)
@@ -295,3 +308,56 @@ def test_move_itself_holds_no_opinion_about_legality():
         run(MoveEntity(entity="player", destination=(99, 99)), world), Effect
     )
     assert world.value("player", "position") == (99, 99)
+
+
+# ---------------------------------------------------------------------------
+# What an operation computed
+# ---------------------------------------------------------------------------
+#
+# `Effect.details` carries what the operation worked out that the event does not already
+# say. Every one of these previous values is computed to record the mutation anyway; an
+# `after` rule receives details as an argument and should not have to scan the record
+# stream for them.
+
+
+def test_set_reports_what_it_displaced():
+    world = build(player={"hp": 3})
+
+    result = run(SetComponent(entity="player", component="hp", value=5), world)
+
+    assert result.details == {"previous": 3, "current": 5}
+
+
+def test_set_reports_missing_when_it_introduced_the_component():
+    """Which is how a reaction tells a create from a replace."""
+    world = build(player={})
+
+    result = run(SetComponent(entity="player", component="hp", value=5), world)
+
+    assert result.details == {"previous": MISSING, "current": 5}
+
+
+def test_remove_component_reports_what_was_there():
+    world = build(player={"poisoned": True})
+
+    result = run(RemoveComponent(entity="player", component="poisoned"), world)
+
+    assert result.details == {"previous": True}
+
+
+def test_delete_reports_what_the_entity_held():
+    """What a reaction to a death needs in order to drop the loot."""
+    world = build(orc={"hp": 5, "loot": ("gold",)})
+
+    result = run(DeleteEntity(entity="orc"), world)
+
+    assert result.details == {"components": {"hp": 5, "loot": ("gold",)}}
+
+
+def test_create_computes_nothing_so_reports_nothing():
+    """Its components are on the event; there is no displaced value."""
+    world = build()
+
+    result = run(CreateEntity(entity="orc", components={"hp": 5}), world)
+
+    assert result.details == {}
