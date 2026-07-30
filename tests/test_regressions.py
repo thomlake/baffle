@@ -15,6 +15,7 @@ from baffle import (
     AppendToList,
     BeforeRule,
     CreateEntity,
+    DeleteEntity,
     Engine,
     EngineFault,
     Event,
@@ -107,6 +108,33 @@ def test_no_operation_stores_the_caller_s_list(event_for):
 
     assert result.entities == before, "mutating the payload must not reach the world"
     assert shared == ["rope", "torch"], "the caller keeps their own list"
+
+
+def test_deleting_an_entity_does_not_hand_out_the_callers_own_components():
+    """``DeleteEntity`` reported the live dict it popped, which under copy-on-write is the
+    caller's own mapping for any entity nothing had written to yet.
+
+    So an ``after`` rule reacting to a death -- reading ``components`` to drop what the
+    thing was carrying, the reason the effect reports them at all -- could write straight
+    into the input state.
+    """
+    looted: list[dict] = []
+
+    class Loot(AfterRule[DeleteEntity]):
+        name = "loot"
+
+        def do(self, world, event, result):
+            looted.append(result["components"])
+            result["components"]["hp"] = 999
+            return ()
+
+    state = {"orc": {"hp": 5, "bag": ("gold",)}}
+
+    result = Engine(rules=[Loot()]).simulate(state, DeleteEntity(entity="orc"))
+
+    assert result.root.committed
+    assert state == {"orc": {"hp": 5, "bag": ("gold",)}}, "the input must be untouched"
+    assert looted[0]["hp"] == 999, "the reaction owns outright what it was handed"
 
 
 def test_a_created_entity_does_not_alias_the_event_that_made_it():

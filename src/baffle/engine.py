@@ -71,10 +71,6 @@ class Engine:
         Record attempts, rule firings, replacements, and frames. On for play and
         debugging; off in a search loop, where the overhead is paid per node. Mutations
         are recorded either way, because rollback and hashing need them.
-    strict:
-        Hand rules a read-only view of each entity. Catches a rule writing to state
-        directly, which under copy-on-write would reach committed state and survive a
-        rollback. Turn it off once a rule set is trusted and throughput matters.
     """
 
     __slots__ = (
@@ -84,7 +80,6 @@ class Engine:
         "max_events_per_transaction",
         "max_transactions",
         "narrate",
-        "strict",
     )
 
     def __init__(
@@ -92,7 +87,6 @@ class Engine:
         rules: Iterable[Rule] = (),
         *,
         narrate: bool = False,
-        strict: bool = True,
         max_transactions: int = MAX_TRANSACTIONS,
         max_depth: int = MAX_DEPTH,
         max_events_per_transaction: int = MAX_EVENTS_PER_TRANSACTION,
@@ -100,7 +94,6 @@ class Engine:
         self._rules: list[Rule] = list(rules)
         self._compiled: RuleSet | None = None
         self.narrate = narrate
-        self.strict = strict
         self.max_transactions = max_transactions
         self.max_depth = max_depth
         self.max_events_per_transaction = max_events_per_transaction
@@ -127,7 +120,6 @@ class Engine:
             log,
             max_depth=self.max_depth,
             max_events_per_transaction=self.max_events_per_transaction,
-            strict=self.strict,
         )
 
     def simulate(self, entities: EntitiesLike, event: Event) -> SimulationResult:

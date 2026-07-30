@@ -20,7 +20,7 @@ def grid_world():
 
 
 def engine():
-    return Engine(rules=[WithinBounds(), Push(), Solid()], narrate=False, strict=False)
+    return Engine(rules=[WithinBounds(), Push(), Solid()], narrate=False)
 
 
 NEIGHBOURS = ((2, 1), (0, 1), (1, 0), (1, 2))

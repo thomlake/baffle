@@ -84,11 +84,11 @@ def test_the_engine_holds_no_world_state():
 
 
 # ---------------------------------------------------------------------------
-# Strict mode
+# An event is the only way to change state
 # ---------------------------------------------------------------------------
 
 
-def test_strict_mode_is_on_by_default_and_catches_direct_mutation():
+def test_a_rule_cannot_reach_through_a_view_to_write():
     """Under copy-on-write this write would reach committed state and survive rollback."""
 
     class Sneaky(BeforeRule[Tick]):
@@ -96,7 +96,7 @@ def test_strict_mode_is_on_by_default_and_catches_direct_mutation():
 
         def do(self, world, event):
             # Deliberately wrong: a rule must emit an event, never write state. The
-            # checker objects, which is the point -- strict mode is the runtime backstop.
+            # checker objects, which is the point -- the sealed world is the backstop.
             world["counter"]["value"] = 99  # type: ignore[index]
             return ()
 
@@ -104,21 +104,39 @@ def test_strict_mode_is_on_by_default_and_catches_direct_mutation():
         Engine(rules=[Sneaky()]).simulate({"counter": {"value": 0}}, Tick())
 
 
-def test_strict_mode_can_be_turned_off_for_throughput():
+def test_a_before_rule_cannot_write_through_the_world_api():
+    """This used to commit, with no frame and no operation to explain it."""
+
     class Sneaky(BeforeRule[Tick]):
         name = "sneaky"
 
         def do(self, world, event):
-            world["counter"]["value"] = 99  # type: ignore[index]  # see above
+            world.set("counter", "value", 99)
             return ()
 
-    engine = Engine(rules=[Sneaky()], strict=False)
-    result = engine.simulate({"counter": {"value": 0}}, Tick())
-
-    assert result.root.committed
+    with pytest.raises(EngineFault, match="may not write"):
+        Engine(rules=[Sneaky()]).simulate({"counter": {"value": 0}}, Tick())
 
 
-def test_reads_still_work_in_strict_mode():
+def test_an_after_rule_cannot_write_through_the_world_api():
+    """The worse half: the write was discarded, but its mutation was logged as committed.
+
+    ``committed_mutations()`` is the hasher's view, so a transposition table took on a
+    change that never happened -- silently, and only in the reaction phase.
+    """
+
+    class Sneaky(AfterRule[Tick]):
+        name = "sneaky"
+
+        def do(self, world, event, result):
+            world.set("counter", "value", 99)
+            return ()
+
+    with pytest.raises(EngineFault, match="may not write"):
+        Engine(rules=[Sneaky()]).simulate({"counter": {"value": 0}}, Tick())
+
+
+def test_reads_still_work_against_a_sealed_world():
     seen: list[int] = []
 
     class Peek(BeforeRule[Tick]):

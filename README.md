@@ -371,9 +371,20 @@ A transaction shallow-copies the entity mapping and copies an entity only when s
 
 The consequence is structural sharing: an entity nothing wrote to is the same object across state generations, including the state you passed in.
 
-**Never mutate a state the engine gave you.** Emit an event instead. `Engine(strict=True)`, the default, hands rules a read-only view of each entity.
+**Never mutate a state the engine gave you.** Emit an event instead — and that is now a constraint rather than a request. The world a rule receives is **sealed**, and there are exactly two ways to write to one, so sealing closes both:
 
-That view is now *complete*. It is one `MappingProxyType` over the component mapping, and because every value inside is immutable there is no second level to hand out. When a component could hold a nested dict, the proxy was one level deep: a rule could take `world["player"]["inventory"]` — a live dict, possibly the caller's own — and write straight through it into committed state, surviving rollback. Recursive proxying was the alternative fix, and it was both expensive and the cause of a workaround in the copy path.
+```python
+world["player"]["hp"] = 99          # TypeError: the view is read-only
+world.set("player", "hp", 99)       # EngineFault: a rule may not write to the world
+```
+
+The resolver unseals the world for the duration of one operation, in one place — `Resolver._execute` — and seals it again. Everything else it hands a rule stays shut: the working world before and after each operation, the pre-transaction world `fail` rules see, the committed world `after` rules see. So an event is the only thing that changes state, and a rule that writes anyway fails where it happens.
+
+Both halves were needed. The view alone left `World.set` public on the very object a rule is handed: writing through it from a `before` rule committed with no frame and no operation to explain it, and from an `after` rule the write was discarded while its mutation stayed in the log *unmarked* — so `committed_mutations()`, the hasher's view, took on a change that never happened.
+
+The read-only view is one `MappingProxyType` over the component mapping, and because every value inside is immutable there is no second level to hand out. When a component could hold a nested dict, the proxy was one level deep: a rule could take `world["player"]["inventory"]` — a live dict, possibly the caller's own — and write straight through it into committed state, surviving rollback. Recursive proxying was the alternative fix, and it was both expensive and the cause of a workaround in the copy path.
+
+There used to be a `strict` flag choosing whether to hand out the view at all, described as a throughput escape hatch. It was not one: `value`, `vector`, and `query` all read the entity mapping directly, so almost nothing took the guarded path and turning it off measured the same. One sealed/unsealed world replaced it, and covers the write API the flag never reached.
 
 ## The record stream
 
@@ -391,7 +402,9 @@ The player move failed because the crate did not move.
 
 The engine emits structure and stays out of the phrasing. `tests/test_records.py` contains a renderer that produces exactly the above.
 
-A `Frame` is one event's resolution and its outcome. The resolver accumulates frames unconditionally, because deciding which `after` or `fail` rules to run is exactly a question about them, and notes the *same object* to the log, where narration picks it up. There used to be a second, field-identical `Outcome` record alongside it; one object in two containers does the job, and marking a rolled-back span now shows up through `Transaction.frames` too.
+A `Frame` is one event's resolution and its outcome. The resolver accumulates frames unconditionally, because deciding which `after` or `fail` rules to run is exactly a question about them, and notes the *same object* to the log, where narration picks it up. There used to be a second, field-identical `Outcome` record alongside it; one object in two containers does the job.
+
+A discarded transaction marks its frames itself rather than leaving it to the log's span, because a frame reaches the log only when narrating while `Transaction.frames` is populated either way. Relying on the span meant `rolled_back` answered differently depending on a debug flag — and a search loop, with narration off, saw every discarded frame reporting success.
 
 Mutation records are unconditional — rollback and hashing depend on them — and carry both the previous and the new value, which is what makes incremental hashing and cheap diffing possible. Everything else is narration, enabled with `Engine(narrate=True)`. In a search loop that overhead is multiplied by every node, so it is off by default.
 

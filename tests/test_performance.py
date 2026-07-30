@@ -46,8 +46,8 @@ def _seconds(work, repeats: int) -> float:
 def measure(entities: int, repeats: int = 200) -> tuple[float, float]:
     """Per-transaction cost, and the cost of one deepcopy of the same world."""
     state = world(entities)
-    # narrate and strict are the play-time defaults; a search loop turns both off.
-    engine = Engine(narrate=False, strict=False)
+    # Narration is the play-time default; a search loop turns it off.
+    engine = Engine(narrate=False)
     event = MoveEntity(entity="e3", destination=(4, 4))
 
     engine.simulate(state, event)  # warm up

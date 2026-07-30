@@ -20,11 +20,12 @@ at both levels.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from .errors import EngineFault
-from .events import Effect, Event, Failure
+from .events import Effect, Event, Failure, OperationResult
 from .records import (
     Attempt,
     Frame,
@@ -37,6 +38,20 @@ from .records import (
 from .rules import AFTER, BEFORE, FAIL, REPLACE, RuleSet, drain
 from .state import World
 from .types import Entities, EntityId
+
+#: Per reaction phase: what a frame hands the rule, or None for a frame this phase has no
+#: business with, and why a refusal at this point is incoherent. The two phases differ in
+#: exactly this much, so :meth:`Resolver.react` serves both.
+_REACTIONS: dict[str, tuple[Callable[[Frame], Any], str]] = {
+    AFTER: (
+        lambda frame: frame.effect.details if frame.effect is not None else None,
+        "An after rule cannot refuse; the transaction has already committed",
+    ),
+    FAIL: (
+        lambda frame: frame.failure,
+        "A fail rule cannot refuse; the transaction has already been discarded",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -81,7 +96,6 @@ class Resolver:
         "max_depth",
         "max_events_per_transaction",
         "rules",
-        "strict",
     )
 
     def __init__(
@@ -91,13 +105,11 @@ class Resolver:
         *,
         max_depth: int,
         max_events_per_transaction: int,
-        strict: bool,
     ) -> None:
         self.rules = rules
         self.log = log
         self.max_depth = max_depth
         self.max_events_per_transaction = max_events_per_transaction
-        self.strict = strict
         self._spent = 0
 
     # -- transaction ------------------------------------------------------
@@ -110,11 +122,16 @@ class Resolver:
         # tar the transaction's own bookends or the fail rules that legitimately ran.
         span = self.log.mark()
 
-        working = World(base, log=self.log, strict=self.strict)
+        working = World(base, log=self.log, sealed=True)
         resolution = self.resolve(working, event, depth=0, chain=(), emitted_by=None)
 
         if not resolution.succeeded:
             self.log.mark_rolled_back(span)
+            # The frames themselves, not only the log's copy of them: a frame reaches the
+            # log only when narrating, while `Transaction.frames` is populated either way,
+            # so the span alone would make the flag depend on a debug setting.
+            for frame in resolution.frames:
+                frame.rolled_back = True
             self.log.note(
                 TransactionEnd(
                     index=index,
@@ -124,14 +141,14 @@ class Resolver:
                 )
             )
             # Fail rules observe the world as it was before any of this happened.
-            unchanged = World(base, log=self.log, strict=self.strict)
+            unchanged = World(base, log=self.log, sealed=True)
             return Transaction(
                 index=index,
                 event=event,
                 entities=base,
                 frames=resolution.frames,
                 failure=resolution.failure,
-                consequences=self.collect_fail(unchanged, resolution.frames),
+                consequences=self.react(FAIL, unchanged, resolution.frames),
             )
 
         committed = working.snapshot()
@@ -139,13 +156,13 @@ class Resolver:
         self.log.note(
             TransactionEnd(index=index, event=event, committed=True, failure=None)
         )
-        after = World(committed, log=self.log, strict=self.strict)
+        after = World(committed, log=self.log, sealed=True)
         return Transaction(
             index=index,
             event=event,
             entities=committed,
             frames=resolution.frames,
-            consequences=self.collect_after(after, resolution.frames),
+            consequences=self.react(AFTER, after, resolution.frames),
             touched=touched,
         )
 
@@ -202,7 +219,7 @@ class Resolver:
         if refusal is not None:
             return self._refuse(event, refusal, depth, frames)
 
-        outcome = event.apply(world)
+        outcome = self._execute(event, world)
         if isinstance(outcome, Failure):
             return self._refuse(event, outcome, depth, frames)
         if not isinstance(outcome, Effect):
@@ -213,6 +230,19 @@ class Resolver:
 
         frames.append(self._frame(Frame(event=event, depth=depth, effect=outcome)))
         return Resolution(frames=tuple(frames))
+
+    def _execute(self, event: Event, world: World) -> OperationResult:
+        """Run the event's operation. The only point at which the world accepts a write.
+
+        Everything else the engine hands a rule -- this world before and after, the
+        pre-transaction world fail rules see, the committed world after rules see -- stays
+        sealed, so an event is the only way state changes.
+        """
+        world.unseal()
+        try:
+            return event.apply(world)
+        finally:
+            world.seal()
 
     def _refuse(
         self,
@@ -229,8 +259,8 @@ class Resolver:
 
         One object in two places. The resolution needs every frame -- it is what decides
         which reaction rules run -- while the log holds the same frames only when
-        narrating. Sharing the object is also what lets a rolled-back span show up
-        through :attr:`Transaction.frames`.
+        narrating. That asymmetry is why :meth:`run` marks a discarded transaction's
+        frames directly instead of relying on the log's span to reach them.
         """
         self.log.note(frame)
         return frame
@@ -290,60 +320,29 @@ class Resolver:
 
     # -- consequences -----------------------------------------------------
 
-    def collect_after(
-        self, world: World, frames: Sequence[Frame]
+    def react(
+        self, phase: str, world: World, frames: Sequence[Frame]
     ) -> tuple[Event, ...]:
-        """React to every frame that committed.
+        """Run one reaction phase over the frames it concerns.
 
-        ``after`` rules receive what the operation computed, which is the information an
-        event deliberately does not carry.
+        ``after`` receives what each operation computed, which is the information an event
+        deliberately does not carry; ``fail`` receives the refusal. A frame the phase has
+        no business with is skipped -- for ``fail`` that means one which succeeded and was
+        then rolled back with the transaction, leaving nothing for a reaction to observe.
+        It stays in the record stream, marked, for anyone rendering what happened.
+
+        Neither phase can refuse: the transaction has already been decided.
         """
+        context, refusal = _REACTIONS[phase]
         produced: list[Event] = []
         for frame in frames:
-            if frame.effect is None:
-                continue  # refused; collect_fail's business
-            for rule in self.rules.for_event(AFTER, frame.event):
-                events, failure = drain(
-                    rule, rule.do(world, frame.event, frame.effect.details)
-                )
+            argument = context(frame)
+            if argument is None:
+                continue
+            for rule in self.rules.for_event(phase, frame.event):
+                events, failure = drain(rule, rule.do(world, frame.event, argument))
                 if failure is not None:
-                    raise EngineFault(
-                        "An after rule cannot refuse; the transaction has already "
-                        "committed",
-                        rule=rule.name,
-                        event=frame.event,
-                    )
-                if events:
-                    self.log.note(
-                        RuleFired(rule=rule.name, event=frame.event, produced=events)
-                    )
-                produced.extend(events)
-        return tuple(produced)
-
-    def collect_fail(
-        self, world: World, frames: Sequence[Frame]
-    ) -> tuple[Event, ...]:
-        """React to every frame that was refused.
-
-        Frames that succeeded before the refusal are skipped: their work was rolled back,
-        so there is nothing for a reaction to observe. They remain in the record stream,
-        marked, for anyone rendering what happened.
-        """
-        produced: list[Event] = []
-        for frame in frames:
-            if frame.failure is None:
-                continue  # succeeded, then rolled back with the transaction
-            for rule in self.rules.for_event(FAIL, frame.event):
-                events, failure = drain(
-                    rule, rule.do(world, frame.event, frame.failure)
-                )
-                if failure is not None:
-                    raise EngineFault(
-                        "A fail rule cannot refuse; the transaction has already been "
-                        "discarded",
-                        rule=rule.name,
-                        event=frame.event,
-                    )
+                    raise EngineFault(refusal, rule=rule.name, event=frame.event)
                 if events:
                     self.log.note(
                         RuleFired(rule=rule.name, event=frame.event, produced=events)

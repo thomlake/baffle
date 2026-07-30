@@ -127,6 +127,17 @@ def own(entities: EntitiesLike) -> Entities:
     return cast(Entities, dict(entities))
 
 
+def _frozen(components: Components) -> Mapping[str, JsonValue]:
+    """An immutable point-in-time snapshot of one entity, for a whole-entity record.
+
+    Every *component* value is immutable, but a create used to record the live dict: write
+    to the entity afterwards and the record retroactively claimed the new value as the one
+    inserted. The copy settles the point in time and the proxy keeps it settled. It
+    compares equal to a plain dict, so a consumer still reads it like one.
+    """
+    return MappingProxyType(dict(components))
+
+
 # ---------------------------------------------------------------------------
 # Canonical hashing
 # ---------------------------------------------------------------------------
@@ -155,21 +166,30 @@ class World:
 
     Reads are cheap and unconditional. Writes go through :meth:`_own`, which is what
     keeps the base state intact for rollback, and record a :class:`~baffle.records.Mutation`.
+
+    A **sealed** world refuses to change, by either route: reads hand back a read-only
+    view, and the write methods raise. That is the engine's central invariant made
+    enforceable -- an event is the only way to change state, so a rule that writes
+    directly fails where it happens rather than committing without a frame or logging a
+    mutation that never took effect.
+
+    Sealing is something the engine does; a `World` built directly is a plain
+    copy-on-write store, so the default is off.
     """
 
-    __slots__ = ("_entities", "_log", "_owned", "_strict")
+    __slots__ = ("_entities", "_log", "_owned", "_sealed")
 
     def __init__(
         self,
         base: EntitiesLike,
         *,
         log: RecordLog,
-        strict: bool = True,
+        sealed: bool = False,
     ) -> None:
         self._entities: Entities = own(base)
         self._owned: set[EntityId] = set()
         self._log = log
-        self._strict = strict
+        self._sealed = sealed
 
     # -- reads ------------------------------------------------------------
 
@@ -179,13 +199,13 @@ class World:
         except KeyError:
             raise EngineFault("No such entity", entity=entity_id) from None
         # Under copy-on-write, writing to a component dict the engine has not yet
-        # copied would reach committed state and survive rollback. In strict mode the
-        # mistake fails at the point it happens instead of corrupting a later turn.
+        # copied would reach committed state and survive rollback. Sealed, the mistake
+        # fails at the point it happens instead of corrupting a later turn.
         #
         # One proxy is total coverage, because the values inside are immutable. When a
         # component could hold a nested dict this guard was only one level deep, and a
         # rule could reach through it into the caller's own state.
-        return MappingProxyType(components) if self._strict else components
+        return MappingProxyType(components) if self._sealed else components
 
     def __contains__(self, entity_id: object) -> bool:
         return entity_id in self._entities
@@ -263,6 +283,27 @@ class World:
             truthy=truthy, falsy=falsy, equals=tuple(equals.items())
         ).run(self._entities)
 
+    # -- the seal ---------------------------------------------------------
+    #
+    # Owned by the resolver, which opens the world for exactly one operation. Nothing
+    # else should touch these.
+
+    def seal(self) -> None:
+        self._sealed = True
+
+    def unseal(self) -> None:
+        self._sealed = False
+
+    def _require_open(
+        self, entity_id: EntityId, key: ComponentPath | None = None
+    ) -> None:
+        if self._sealed:
+            raise EngineFault(
+                "A rule may not write to the world; emit an event instead",
+                entity=entity_id,
+                component=key,
+            )
+
     # -- copy-on-write ----------------------------------------------------
 
     def _own(self, entity_id: EntityId) -> Components:
@@ -313,6 +354,7 @@ class World:
         create: bool = True,
     ) -> Any:
         """Replace the value at `key`, introducing it when absent. Returns the old one."""
+        self._require_open(entity_id, key)
         validate_key(key)
         components = self._own(entity_id)
         value = normalize_value(value)
@@ -329,6 +371,7 @@ class World:
 
     def unset(self, entity_id: EntityId, key: ComponentPath) -> Any:
         """Drop `key`. Returns the value that was there."""
+        self._require_open(entity_id, key)
         validate_key(key)
         components = self._own(entity_id)
         if key not in components:
@@ -341,22 +384,26 @@ class World:
 
     def create(self, entity_id: EntityId, components: Mapping[str, JsonValue]) -> None:
         """Add an entity. Displaces nothing, so there is nothing to return."""
+        self._require_open(entity_id)
         if entity_id in self._entities:
             raise EngineFault("Entity already exists", entity=entity_id)
         owned = normalize_components(components)
         self._entities[entity_id] = owned
         self._owned.add(entity_id)
-        self._record(entity_id, WHOLE_ENTITY, MISSING, owned, "insert")
+        self._record(entity_id, WHOLE_ENTITY, MISSING, _frozen(owned), "insert")
 
     def delete(self, entity_id: EntityId) -> Components:
         """Remove an entity. Returns everything it held."""
+        self._require_open(entity_id)
         try:
             old = self._entities.pop(entity_id)
         except KeyError:
             raise EngineFault("No such entity", entity=entity_id) from None
         self._owned.discard(entity_id)
-        self._record(entity_id, WHOLE_ENTITY, old, MISSING, "remove")
-        return old
+        # The popped mapping may be shared with a caller's own state, so the reaction
+        # gets a copy it owns outright rather than a handle into someone else's world.
+        self._record(entity_id, WHOLE_ENTITY, _frozen(old), MISSING, "remove")
+        return dict(old)
 
     # -- boundary ---------------------------------------------------------
 

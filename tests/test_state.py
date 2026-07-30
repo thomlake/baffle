@@ -15,9 +15,9 @@ from baffle import (
 )
 
 
-def build(strict=False, **entities):
+def build(sealed=False, **entities):
     log = RecordLog()
-    return World(entities, log=log, strict=strict), log
+    return World(entities, log=log, sealed=sealed), log
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ def test_a_namespaced_key_needs_no_parent_to_exist():
 
 def test_only_written_entities_are_copied():
     base = {"a": {"v": 1}, "b": {"v": 2}, "c": {"v": 3}}
-    world = World(base, log=RecordLog(), strict=False)
+    world = World(base, log=RecordLog())
 
     world.set("b", "v", 20)
     result = world.snapshot()
@@ -96,7 +96,7 @@ def test_only_written_entities_are_copied():
 
 def test_repeated_writes_copy_an_entity_once():
     base = {"a": {"v": 1}}
-    world = World(base, log=RecordLog(), strict=False)
+    world = World(base, log=RecordLog())
 
     world.set("a", "v", 2)
     first = world.snapshot()["a"]
@@ -108,7 +108,7 @@ def test_repeated_writes_copy_an_entity_once():
 
 def test_discarding_a_working_state_leaves_the_base_untouched():
     base = {"a": {"bag": ("rope",)}}
-    world = World(base, log=RecordLog(), strict=False)
+    world = World(base, log=RecordLog())
 
     world.set("a", "bag", ("rope", "torch"))
 
@@ -135,7 +135,7 @@ def test_stored_values_cannot_be_reached_from_outside():
     This needed a deep copy of every stored value when a component could hold a list or
     a dict. Immutability makes it structural instead.
     """
-    world, _ = build(strict=True, a={"bag": ("x",)}, b={})
+    world, _ = build(a={"bag": ("x",)}, b={})
     shared = ["rope"]
 
     world.set("b", "bag", shared)
@@ -156,23 +156,57 @@ def test_a_component_cannot_hold_a_mutable_or_inexact_value(value):
         world.set("a", "v", value)  # type: ignore[arg-type]
 
 
-def test_strict_mode_refuses_direct_mutation():
+def test_a_sealed_world_refuses_direct_mutation():
     """Under copy-on-write this write would reach committed state and survive rollback."""
-    world, _ = build(strict=True, player={"hp": 3})
+    world, _ = build(sealed=True, player={"hp": 3})
 
     with pytest.raises(TypeError):
-        # Deliberately wrong: the read-only view is the point of strict mode.
+        # Deliberately wrong: the read-only view is half of what sealing means.
         world["player"]["hp"] = 99  # type: ignore[index]
 
 
-def test_strict_mode_has_nothing_to_reach_through():
+def test_a_sealed_world_refuses_the_write_methods_too():
+    """The other half, and the one a rule reaches by accident.
+
+    ``world["p"]["hp"] = 99`` is caught by the view, but ``world.set(...)`` is public API
+    on the very object a rule is handed. Writing through it used to commit with no frame
+    and no operation, or -- from a reaction -- log a mutation whose write was discarded.
+    """
+    world, _ = build(sealed=True, player={"hp": 3})
+
+    for write in (
+        lambda: world.set("player", "hp", 99),
+        lambda: world.unset("player", "hp"),
+        lambda: world.create("orc", {"hp": 1}),
+        lambda: world.delete("player"),
+    ):
+        with pytest.raises(EngineFault, match="may not write"):
+            write()
+
+    assert world.value("player", "hp") == 3, "nothing got through"
+
+
+def test_unsealing_is_what_lets_an_operation_write():
+    """The resolver opens the world for exactly one operation, then closes it again."""
+    world, _ = build(sealed=True, player={"hp": 3})
+
+    world.unseal()
+    world.set("player", "hp", 5)
+    world.seal()
+
+    assert world.value("player", "hp") == 5
+    with pytest.raises(EngineFault, match="may not write"):
+        world.set("player", "hp", 7)
+
+
+def test_a_sealed_world_has_nothing_to_reach_through():
     """The proxy used to be one level deep, so a nested container leaked the real object.
 
     A rule could take ``world["player"]["inventory"]`` -- a live dict, possibly the
     caller's own -- and write to it, reaching committed state and surviving rollback.
     Immutable values mean there is no second level to hand out.
     """
-    world, _ = build(strict=True, player={"bag": ("rope",), "hp": 3})
+    world, _ = build(sealed=True, player={"bag": ("rope",), "hp": 3})
 
     for value in world["player"].values():
         assert not isinstance(value, (list, dict, set))
@@ -246,6 +280,24 @@ def test_entity_lifecycle_records_the_whole_entity():
     created, deleted = [r for r in log if isinstance(r, Mutation)]
     assert (created.kind, created.path, created.new) == ("insert", "", {"hp": 2})
     assert (deleted.kind, deleted.path, deleted.old) == ("remove", "", {"hp": 5})
+
+
+def test_a_whole_entity_record_is_a_snapshot_not_a_live_view():
+    """It used to hold the live dict, so a later write rewrote recorded history.
+
+    Every *component* value is immutable, which is what makes the other records honest.
+    A whole-entity record had no such guarantee: create an entity, write to it, and the
+    insert retroactively claimed the new value was the one inserted.
+    """
+    world, log = build(player={"hp": 3})
+
+    world.create("goblin", {"hp": 2})
+    world.set("goblin", "hp", 99)
+
+    created = next(r for r in log if isinstance(r, Mutation) and r.kind == "insert")
+    assert created.new == {"hp": 2}, "the record must say what was actually inserted"
+    with pytest.raises(TypeError):
+        created.new["hp"] = 0  # type: ignore[index]
 
 
 # ---------------------------------------------------------------------------

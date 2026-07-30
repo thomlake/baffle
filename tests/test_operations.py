@@ -30,7 +30,7 @@ from baffle import (
 
 
 def build(**entities):
-    return World(entities, log=RecordLog(), strict=False)
+    return World(entities, log=RecordLog())
 
 
 def run(event, world):
@@ -239,7 +239,7 @@ def test_sequence_operations_refuse_the_wrong_shape():
 def test_a_sequence_operation_records_one_replacement():
     """No in-place edit exists to record, because the value is immutable."""
     log = RecordLog()
-    world = World({"player": {"bag": ("rope",)}}, log=log, strict=False)
+    world = World({"player": {"bag": ("rope",)}}, log=log)
 
     run(AppendToList(entity="player", component="bag", value="torch"), world)
 

@@ -1,6 +1,6 @@
 """The observable record of a simulation.
 
-One append-only stream per :func:`~baffle.simulate.simulate` call, serving three
+One append-only stream per :meth:`~baffle.engine.Engine.simulate` call, serving three
 consumers with different needs:
 
 * **Rendering** wants a linear transcript, including attempts that were later rolled
@@ -112,9 +112,13 @@ class Frame(Record):
     prerequisite that succeeded before a later refusal is still in the list. Dropping
     those was how "the crate moved and then it did not" became unreportable.
 
-    Mutable, and not frozen, so :meth:`RecordLog.mark_rolled_back` can flag it. Nothing
-    is lost by that: :class:`~baffle.events.Effect` holds a dict, so a frame was never
-    hashable.
+    Mutable, and not frozen, so a discarded transaction can flag it. Nothing is lost by
+    that: :class:`~baffle.events.Effect` holds a dict, so a frame was never hashable.
+
+    A frame reaches this log only when narrating, but the resolver keeps every frame
+    regardless, so the resolver marks them itself rather than leaving it to
+    :meth:`RecordLog.mark_rolled_back`. Otherwise ``rolled_back`` would answer differently
+    depending on whether narration happened to be on.
     """
 
     event: Event

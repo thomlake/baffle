@@ -588,6 +588,30 @@ def test_a_rolled_back_success_is_still_recorded(door_state):
     assert [type(frame.event).__name__ for frame in failed] == ["MoveEntity"]
 
 
+@pytest.mark.parametrize("narrate", [True, False])
+def test_frames_are_marked_rolled_back_whether_or_not_narrating(narrate, door_state):
+    """`Transaction.frames` is populated either way, so its flags mean the same thing.
+
+    Marking used to work only through the record log's span, which frames enter only when
+    narrating -- so whether a discarded frame knew it had been discarded depended on a
+    debug flag, and a search loop (narration off) saw every frame reporting success.
+    """
+
+    class Veto(BeforeRule[MoveEntity]):
+        name = "veto"
+        run_after = ("unlock",)
+
+        def do(self, world, event):
+            return Failure("vetoed")
+
+    engine = Engine(rules=[Unlock(), Veto()], narrate=narrate)
+    result = move_player(engine, door_state)
+
+    assert not result.root.committed
+    assert result.root.frames, "the discarded work must still be reported"
+    assert all(frame.rolled_back for frame in result.root.frames)
+
+
 def test_committed_mutations_exclude_discarded_work(door_state):
     """The hasher's view: only what survived, in order."""
     result = _vetoed_after_unlocking(door_state)
