@@ -246,7 +246,7 @@ class RemoveValue(ComponentEvent):
             index = target.index(self.value)
         except ValueError:
             return Failure("value_absent", {**self._context(), "value": self.value})
-        current = (*target[:index], *target[index + 1 :])
+        current = (*target[:index], *target[index + 1:])
         world.set(self.entity, self.component, current)
         return Effect(
             {
