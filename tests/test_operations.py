@@ -8,9 +8,12 @@ is a legal move that did not work, a fault is a bug.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from baffle import (
+    EAST,
     MISSING,
     AppendToList,
     CreateEntity,
@@ -26,6 +29,7 @@ from baffle import (
     RemoveValue,
     SetComponent,
     World,
+    shift,
 )
 
 
@@ -308,6 +312,33 @@ def test_move_itself_holds_no_opinion_about_legality():
         run(MoveEntity(entity="player", destination=(99, 99)), world), Effect
     )
     assert world.value("player", "position") == (99, 99)
+
+
+@pytest.mark.parametrize(
+    "destination", [(1, 2, 3), (1,), (), (1, "2"), (True, False), "12", (1.0, 2.0)]
+)
+def test_a_destination_that_is_not_a_coordinate_is_refused_at_construction(destination):
+    """Legality is a rule. Being a coordinate is not, and nothing downstream rechecks.
+
+    ``normalize_value`` accepts any tuple of scalars, so a three-tuple used to land in
+    ``position`` and commit. The fault then surfaced from whichever unrelated rule next
+    called ``world.vector``, with nothing left to point back at the line that caused it.
+    """
+    with pytest.raises(EngineFault, match="pair of integers"):
+        MoveEntity(entity="player", destination=destination)
+
+
+def test_a_destination_is_still_checked_when_it_was_computed():
+    """A checker covers a literal; a computed value is as narrow as what it came from."""
+    world = build(player={"position": (0, 0)})
+
+    stepped = MoveEntity(entity="player", destination=shift((0, 0), EAST))
+    assert isinstance(run(stepped, world), Effect)
+
+    coordinates = [1, 2, 3]  # as a JSON decoder hands it over
+    decoded: Any = tuple(coordinates)
+    with pytest.raises(EngineFault, match="pair of integers"):
+        MoveEntity(entity="player", destination=decoded)
 
 
 # ---------------------------------------------------------------------------

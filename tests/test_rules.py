@@ -17,6 +17,7 @@ from baffle import (
     Rule,
     RuleSet,
 )
+from baffle.naming import snake_case
 
 
 class Ping(Event):
@@ -51,13 +52,33 @@ def tracer(order: list[str], rule_name: str, event=Ping):
 # ---------------------------------------------------------------------------
 
 
-def test_a_rule_name_defaults_to_its_class_name_in_kebab_case():
+def test_a_rule_name_defaults_to_its_class_name_in_snake_case():
     class PushTheCrate(BeforeRule[Ping]):
 
         def do(self, world, event):
             return ()
 
-    assert PushTheCrate.name == "push-the-crate"
+    assert PushTheCrate.name == "push_the_crate"
+
+
+def test_rules_and_events_derive_a_name_the_same_way():
+    """One convention, one function. They used to disagree -- kebab for rules, snake for
+    events -- so `WithinBounds` was `within-bounds` beside `set_component`.
+    """
+
+    class Cadence(Event):
+        pass
+
+    class Cadence2(BeforeRule[Ping]):
+        def do(self, world, event):
+            return ()
+
+    assert Cadence.name == "cadence"
+    assert Cadence2.name == snake_case("Cadence2") == "cadence2"
+
+    # Every capital is a boundary, which a run of them makes visible. Documented rather
+    # than special-cased: a class that reads badly under the rule sets `name` itself.
+    assert snake_case("HPCost") == "h_p_cost"
 
 
 def test_duplicate_rule_names_are_refused_at_compile_time():
@@ -153,7 +174,7 @@ def test_constraints_naming_an_absent_rule_are_vacuous():
 
     class Lonely(BeforeRule[Ping]):
         name = "lonely"
-        run_before = ("not-installed",)
+        run_before = ("not_installed",)
 
         def do(self, world, event):
             return ()
@@ -205,11 +226,11 @@ def test_declared_order_decides_the_outcome_of_the_canonical_pair():
 
 def test_a_rule_matches_subclasses_of_the_event_it_declares():
     order: list[str] = []
-    engine = Engine(rules=[tracer(order, "on-ping", event=Ping)()])
+    engine = Engine(rules=[tracer(order, "on_ping", event=Ping)()])
 
     engine.simulate({}, Pong())
 
-    assert order == ["on-ping"]
+    assert order == ["on_ping"]
 
 
 def test_a_rule_with_no_declared_event_matches_everything():
@@ -340,7 +361,7 @@ def test_producing_something_that_is_neither_is_refused():
 
 def test_an_after_rule_cannot_reject_a_committed_transaction():
     class TooLate(AfterRule[Ping]):
-        name = "too-late"
+        name = "too_late"
 
         def do(self, world, event, result):  # type: ignore[override]
             # An after rule refusing is meaningless; the engine rejects it at runtime.
@@ -358,7 +379,7 @@ def test_a_fail_rule_cannot_reject_a_discarded_transaction():
             return Failure("vetoed")
 
     class TooLate(FailRule[Ping]):
-        name = "too-late"
+        name = "too_late"
 
         def do(self, world, event, failure):  # type: ignore[override]
             yield Failure("again")  # as above, for fail rules

@@ -20,11 +20,13 @@ existing pair.
 
 from __future__ import annotations
 
+import heapq
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, ClassVar, get_args, get_origin
 
 from .errors import EngineFault
 from .events import Event, Failure
+from .naming import snake_case
 from .state import World
 
 REPLACE = "replace"
@@ -36,7 +38,8 @@ FAIL = "fail"
 class Rule:
     """Base for every rule. Subclass one of the four phase classes instead."""
 
-    #: Unique within a rule set. Defaults to the class name in kebab-case.
+    #: Unique within a rule set. Defaults to the class name in snake_case, by the same
+    #: derivation an event's registered name uses -- see :mod:`baffle.naming`.
     name: ClassVar[str]
     #: Which events this rule matches. Derived from the phase class's type argument, so
     #: ``BeforeRule[MoveEntity]`` both declares it and types ``event`` in :meth:`do`.
@@ -54,7 +57,7 @@ class Rule:
         if "phase" in cls.__dict__:
             return  # one of the four phase base classes
         if "name" not in cls.__dict__:
-            cls.name = _kebab(cls.__name__)
+            cls.name = snake_case(cls.__name__)
         if "on" not in cls.__dict__:
             derived = _matched_events(cls)
             if derived is not None:
@@ -263,44 +266,59 @@ def _reject_duplicate_names(rules: Sequence[Rule]) -> None:
 def _order(rules: Sequence[Rule]) -> tuple[Rule, ...]:
     """Topologically sort one phase, breaking ties by declaration order.
 
-    Constraints naming a rule outside this phase are vacuous rather than an error, so a
-    mechanic can declare where it sits without requiring its neighbours to be installed.
+    Kahn's algorithm: repeatedly emit a rule with nothing left waiting to run before
+    it. Where several are eligible at once the constraints do not care which goes
+    first, so the earliest-declared wins -- which is what makes registration order the
+    documented tiebreak. `eligible` is therefore a heap keyed by declared position
+    rather than a plain queue: "the next rule to emit" is exactly "the smallest
+    position still eligible".
+
+    `run_before` and `run_after` are two spellings of one edge. Both are normalised
+    into `successors` up front, so nothing after this point has to know which spelling
+    was used, and a pair declaring the relationship from both ends is one edge rather
+    than two.
+
+    A constraint naming a rule that is not installed is vacuous rather than an error,
+    so a mechanic can declare where it sits without dragging its neighbours in.
+
+    A cycle cannot be emitted -- every rule in it waits on another -- so it shows up as
+    rules left over at the end, and those left over are precisely the cycle.
     """
-    index = {rule.name: position for position, rule in enumerate(rules)}
+    position = {rule.name: index for index, rule in enumerate(rules)}
     successors: dict[str, set[str]] = {rule.name: set() for rule in rules}
-    incoming: dict[str, int] = {rule.name: 0 for rule in rules}
+    # How many rules must still be emitted before this one is eligible.
+    waiting_on: dict[str, int] = {rule.name: 0 for rule in rules}
 
     def edge(earlier: str, later: str) -> None:
+        # Idempotent, because the count is what decides eligibility: recording one
+        # relationship twice would leave `later` waiting on a rule that already ran.
         if later in successors[earlier]:
             return
         successors[earlier].add(later)
-        incoming[later] += 1
+        waiting_on[later] += 1
 
     for rule in rules:
         for other in rule.run_before:
-            if other in index:
+            if other in position:
                 edge(rule.name, other)
         for other in rule.run_after:
-            if other in index:
+            if other in position:
                 edge(other, rule.name)
 
-    ready = sorted(
-        (name for name, count in incoming.items() if count == 0), key=index.__getitem__
-    )
+    eligible = [position[name] for name, count in waiting_on.items() if not count]
+    heapq.heapify(eligible)
     ordered: list[Rule] = []
-    by_name = {rule.name: rule for rule in rules}
-    while ready:
-        name = ready.pop(0)
-        ordered.append(by_name[name])
-        for follower in sorted(successors[name], key=index.__getitem__):
-            incoming[follower] -= 1
-            if incoming[follower] == 0:
-                ready.append(follower)
-        ready.sort(key=index.__getitem__)
+    while eligible:
+        rule = rules[heapq.heappop(eligible)]
+        ordered.append(rule)
+        for follower in successors[rule.name]:
+            waiting_on[follower] -= 1
+            if not waiting_on[follower]:
+                heapq.heappush(eligible, position[follower])
 
     if len(ordered) != len(rules):
-        unresolved = sorted(set(by_name) - {rule.name for rule in ordered})
-        raise EngineFault(f"Rule ordering constraints are cyclic among {unresolved}")
+        stuck = sorted(position.keys() - {rule.name for rule in ordered})
+        raise EngineFault(f"Rule ordering constraints are cyclic among {stuck}")
     return tuple(ordered)
 
 
@@ -322,12 +340,3 @@ def _matched_events(cls: type) -> type[Event] | tuple[type[Event], ...] | None:
         if all(isinstance(member, type) and issubclass(member, Event) for member in members):
             return members[0] if len(members) == 1 else members
     return None
-
-
-def _kebab(name: str) -> str:
-    out: list[str] = []
-    for position, char in enumerate(name):
-        if char.isupper() and position:
-            out.append("-")
-        out.append(char.lower())
-    return "".join(out)

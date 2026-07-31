@@ -25,10 +25,8 @@ class WithinBounds(BeforeRule[MoveEntity]):
 
     Install it before rules that emit further movement, so an illegal destination is
     refused without first computing the consequences of reaching it. Registration order
-    does that; a game with its own opinion declares ``run_after = ("within-bounds",)``.
+    does that; a game with its own opinion declares ``run_after = ("within_bounds",)``.
     """
-
-    name = "within-bounds"
 
     def do(self, world: World, event: MoveEntity) -> Failure | tuple[()]:
         width = world.value(WORLD, "width", default=None)

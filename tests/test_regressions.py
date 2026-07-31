@@ -47,7 +47,7 @@ def test_a_set_does_not_alias_its_payload_into_state():
     """
 
     class CopyPosition(BeforeRule[Trigger]):
-        name = "copy-position"
+        name = "copy_position"
 
         def do(self, world, event):
             yield SetComponent(
@@ -353,14 +353,14 @@ def test_replacement_does_not_silently_stop_chaining():
         name = "test.chain_second"
 
     class ToSecond(ReplaceRule[First]):
-        name = "to-second"
-        run_before = ("to-increment",)
+        name = "to_second"
+        run_before = ("to_increment",)
 
         def do(self, world, event):
             return Second()
 
     class ToIncrement(ReplaceRule[Second]):
-        name = "to-increment"
+        name = "to_increment"
 
         def do(self, world, event):
             return IncrementComponent(entity="counter", component="value", value=1)

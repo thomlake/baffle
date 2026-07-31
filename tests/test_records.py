@@ -49,7 +49,7 @@ class Step(Event):
 class ResolveStep(ReplaceRule[Step]):
     """Turn a direction into a destination, while state is available to do it."""
 
-    name = "resolve-step"
+    name = "resolve_step"
 
     def do(self, world, event):
         return MoveEntity(
@@ -223,7 +223,7 @@ def test_replacement_is_recorded_with_its_author():
     records = list(run(open_world()).records)
     replacements = [r for r in records if isinstance(r, Replaced)]
 
-    assert [r.by_rule for r in replacements] == ["resolve-step", "resolve-step"]
+    assert [r.by_rule for r in replacements] == ["resolve_step", "resolve_step"]
     assert isinstance(replacements[0].before, Step)
     assert isinstance(replacements[0].after, MoveEntity)
 

@@ -7,7 +7,7 @@ from scenarios import Push, Solid, Unlock, door_world, push_world
 
 EAST = (1, 0)
 
-# `within-bounds` is what makes the cramped world cramped: the grid is declared on the
+# `within_bounds` is what makes the cramped world cramped: the grid is declared on the
 # world entity, and refusing a move that leaves it is a rule like any other.
 
 

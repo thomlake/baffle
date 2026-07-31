@@ -103,6 +103,8 @@ Numeric priorities are deliberately absent. `push` must precede `solid`, and wit
 
 Constraints naming a rule that is not installed are vacuous, so a mechanic can declare where it sits without requiring its neighbours.
 
+The sort is Kahn's algorithm over a min-heap keyed by declared position, which is what makes the tiebreak structural rather than something a re-sort has to keep restoring: "the next rule to run" is exactly "the smallest position with nothing left waiting on it".
+
 ## Two subtleties worth knowing
 
 **A rule sees one view of the world; rules are sequential with each other.** The engine drains `do` completely before resolving anything it produced, so a rule that fans out decides every iteration against the same world. But the *next* rule sees everything the previous one did. That is what makes prerequisites compose:
@@ -188,6 +190,8 @@ class Footprint(AfterRule[MoveEntity]):
 
 That split is why `MoveEntity` carries a concrete `destination` rather than a direction. Deriving position lazily would make the event ambiguous between emission and execution — and those differ, because prerequisites resolve in between. Direction-based authoring belongs in a replace rule that resolves a step into a destination while state is at hand; `tests/test_records.py` shows the pattern.
 
+That the destination is a *pair of integers* is checked at construction, because `MoveEntity(entity="p", destination=(1, 2, 3))` type-checks only when it is written as a literal. A destination computed from decoded data or component arithmetic is as narrow as its source, and nothing downstream re-checks — `normalize_value` takes any tuple of scalars, so a three-tuple used to land in `position` and commit, surfacing as a fault from whichever unrelated rule next read a position. `is_vec2` is the predicate, shared with `World.vector`.
+
 The same rule decides which built-in operations exist. `AppendToList(value=x)` and `RemoveValue(value=x)` are specified by value, so they mean the same thing at emission and at execution. An operation specified by *position* would not — index 2 is whatever happens to be there when it runs — so there is none.
 
 | Operation | Target | `details` |
@@ -229,6 +233,8 @@ That marker is the reason `requires-python` is `>=3.12` — `frozen_default` lan
 ### Naming
 
 Built-in events read verb then target — `SetComponent`, `DeleteEntity`, `AppendToList` — so a rule reads as a sentence and a log line explains itself. The registered name follows: `set_component`, `append_to_list`.
+
+A rule's name is derived the same way, by the same function — `naming.snake_case` — so `WithinBounds` is `within_bounds`. It used to be `within-bounds`: events and rules had a camel-case converter each, one producing snake and one kebab, and nothing recorded why they disagreed. Every capital is a boundary, so `HPCost` would derive `h_p_cost`; a class that reads badly under the rule sets `name` explicitly, which is what the derivation is a fallback for.
 
 Their base classes are named for the **precondition** they impose, not for what they act on:
 
@@ -327,7 +333,7 @@ BEGIN TRANSACTION
 │   │   └── emit required MOVE crate
 │   │
 │   ├── Resolve MOVE crate
-│   │   ├── before: within-bounds refuses
+│   │   ├── before: within_bounds refuses
 │   │   │   └── REJECT: outside_grid
 │   │   └── record failed MOVE crate frame
 │   │
@@ -438,6 +444,7 @@ for destination in candidates:
 | `resolve.py` | Event resolution and the transaction boundary |
 | `engine.py` | Facade, the consequence cascade, and the limits |
 | `vectors.py` | Grid arithmetic |
+| `naming.py` | How a class name becomes an identifier, for events and rules alike |
 
 ## Tests
 

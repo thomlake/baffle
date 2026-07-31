@@ -30,7 +30,7 @@ from .errors import EngineFault
 from .events import NO_EFFECT, Effect, Event, Failure, OperationResult
 from .state import World, validate_key
 from .types import ComponentPath, EntityId, JsonValue
-from .vectors import Vec2
+from .vectors import Vec2, is_vec2
 
 
 class EntityEvent(Event, abstract=True):
@@ -113,10 +113,22 @@ class MoveEntity(ExistingEntityEvent):
     resolves a step into a destination while state is at hand.
 
     Whether a destination is *legal* is a rule, not part of this operation. See
-    :class:`~baffle.mechanics.WithinBounds`.
+    :class:`~baffle.mechanics.WithinBounds`. Whether it is a *coordinate* is settled
+    here, at construction: a checker catches a literal, but a destination computed at
+    runtime -- from decoded data, or arithmetic on a component -- is only as narrow as
+    its source. Nothing downstream rechecks, so a three-tuple used to commit as
+    ``position`` and surface much later, as a fault from whichever unrelated rule next
+    read a position.
     """
 
     destination: Vec2
+
+    def __post_init__(self) -> None:
+        if not is_vec2(self.destination):
+            raise EngineFault(
+                f"A destination must be a pair of integers, got {self.destination!r}",
+                event=self,
+            )
 
     def apply(self, world: World) -> OperationResult:
         # Read rather than take `set`'s displaced value, which would be MISSING for an

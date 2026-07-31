@@ -217,7 +217,7 @@ def test_a_rule_sees_one_view_of_the_world_while_it_fans_out():
         name = "test.tally"
 
     class TwoIncrements(BeforeRule[Tally]):
-        name = "two-increments"
+        name = "two_increments"
 
         def do(self, world, event):
             for amount in (1, 2):
@@ -400,14 +400,14 @@ def test_replacement_is_an_intercept_not_a_chain():
         name = "test.beta"
 
     class AlphaToBeta(ReplaceRule[Alpha]):
-        name = "alpha-to-beta"
+        name = "alpha_to_beta"
 
         def do(self, world, event):
             return Beta()
 
     class BetaToIncrement(ReplaceRule[Beta]):
-        name = "beta-to-increment"
-        run_after = ("alpha-to-beta",)
+        name = "beta_to_increment"
+        run_after = ("alpha_to_beta",)
 
         def do(self, world, event):
             return IncrementComponent(entity="counter", component="value", value=1)

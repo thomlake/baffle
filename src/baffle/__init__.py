@@ -72,7 +72,18 @@ from .types import (
     JsonScalar,
     JsonValue,
 )
-from .vectors import EAST, NORTH, SOUTH, WEST, Vec2, delta, manhattan, scale, shift
+from .vectors import (
+    EAST,
+    NORTH,
+    SOUTH,
+    WEST,
+    Vec2,
+    delta,
+    is_vec2,
+    manhattan,
+    scale,
+    shift,
+)
 
 __all__ = [
     # Engine, and the limits it runs under
@@ -144,6 +155,7 @@ __all__ = [
     "delta",
     "scale",
     "manhattan",
+    "is_vec2",
     # Vocabulary and errors
     "EngineFault",
     "Entities",

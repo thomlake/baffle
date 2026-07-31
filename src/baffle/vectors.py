@@ -6,12 +6,33 @@ place once they are shared between an event and the state.
 
 from __future__ import annotations
 
+from typing import TypeGuard
+
 type Vec2 = tuple[int, int]
 
 NORTH: Vec2 = (0, -1)
 SOUTH: Vec2 = (0, 1)
 EAST: Vec2 = (1, 0)
 WEST: Vec2 = (-1, 0)
+
+
+def is_vec2(value: object) -> TypeGuard[Vec2]:
+    """Whether `value` is a pair of plain integers.
+
+    Shared by the two places a vector arrives from somewhere untyped: a component read
+    back out of the world, and a coordinate field on an event. Returning a
+    :class:`~typing.TypeGuard` is what lets both narrow rather than cast.
+
+    `bool` is excluded because it is an `int` in Python, so a position of
+    ``(True, False)`` is a bug wearing a coordinate's clothes.
+    """
+    return (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and all(
+            isinstance(number, int) and not isinstance(number, bool) for number in value
+        )
+    )
 
 
 def shift(position: Vec2, direction: Vec2) -> Vec2:

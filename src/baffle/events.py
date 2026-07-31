@@ -16,22 +16,16 @@ is a :class:`Failure`, the same class a ``before`` rule returns to refuse an eve
 from __future__ import annotations
 
 import dataclasses
-import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, dataclass_transform
 
 from .errors import EngineFault
+from .naming import snake_case
 
 if TYPE_CHECKING:  # pragma: no cover
     from .state import World
 
 _REGISTRY: dict[str, type[Event]] = {}
-
-_CAMEL_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
-
-
-def _default_name(cls: type) -> str:
-    return _CAMEL_BOUNDARY.sub("_", cls.__name__).lower()
 
 
 @dataclass_transform(
@@ -70,7 +64,7 @@ class Event:
         if abstract:
             return
         if "name" not in cls.__dict__:
-            cls.name = _default_name(cls)
+            cls.name = snake_case(cls.__name__)
         existing = _REGISTRY.get(cls.name)
         if existing is not None and existing is not cls:
             raise EngineFault(

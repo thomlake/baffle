@@ -31,7 +31,7 @@ from .types import (
     EntityId,
     JsonValue,
 )
-from .vectors import Vec2
+from .vectors import Vec2, is_vec2
 
 
 class _Missing:
@@ -246,15 +246,13 @@ class World:
         difference between a checked rule and a rule full of casts.
         """
         value = self.value(entity_id, key)
-        if isinstance(value, tuple) and len(value) == 2:
-            x, y = value
-            if all(isinstance(n, int) and not isinstance(n, bool) for n in (x, y)):
-                return (x, y)  # type: ignore[return-value]
-        raise EngineFault(
-            f"Component is not a two-integer vector: {value!r}",
-            entity=entity_id,
-            component=key,
-        )
+        if not is_vec2(value):
+            raise EngineFault(
+                f"Component is not a two-integer vector: {value!r}",
+                entity=entity_id,
+                component=key,
+            )
+        return value
 
     def query(
         self,
