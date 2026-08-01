@@ -1,45 +1,13 @@
 [project]
 name = "baffle"
 version = "0.1.0"
-description = "A small transactional rules engine for turn-based simulations"
+description = "A rules engine for composable event-driven simulations"
 readme = "README.md"
-# 3.12 for typing.dataclass_transform(frozen_default=...), which is what makes event
-# constructors visible to a type checker. See baffle.events.Event.
 requires-python = ">=3.12"
 license = {text = "MIT"}
-authors = [{name = "OpenAI"}]
+authors = [{name = "thom.l.lake@gmail.com"}]
 dependencies = []
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]
 build-backend = "uv_build"
-
-[dependency-groups]
-dev = [
-    "ipython>=9.16.0",
-    "pytest>=9.1.1",
-]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-markers = [
-    "perf: throughput checks; deselect with -m 'not perf'",
-]
-
-[tool.pyright]
-include = ["src", "tests"]
-# tests/ is on sys.path via pytest, so `scenarios` and `conftest` resolve there too.
-extraPaths = ["tests"]
-venvPath = "."
-venv = ".venv"
-
-[tool.ruff]
-line-length = 90
-
-[tool.ruff.lint]
-# __all__ is grouped by category with comments, which reads better than alphabetical.
-ignore = ["RUF022"]
-
-[tool.ruff.lint.isort]
-# tests/ is on sys.path via pytest, so these are ours rather than third-party.
-known-first-party = ["baffle", "scenarios", "conftest"]
