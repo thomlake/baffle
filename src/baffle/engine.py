@@ -13,81 +13,77 @@ from baffle.world import World
 type Rule = RequireRule[Any] | RejectRule[Any] | ReactRule[Any]
 
 
-def submit(
-    world: World,
-    event: Event,
-    rules: Iterable[Rule] = (),
-) -> tuple[Resolution, ...]:
-    """Submit an external event and process reactions until quiescence."""
+class Engine:
+    """A configured collection of event-processing rules."""
 
-    before_rules, react_rules = _partition_rules(rules)
+    def __init__(self, rules: Iterable[Rule] = ()) -> None:
+        self._before_rules: list[BeforeRule] = []
+        self._react_rules: list[ReactRule[Any]] = []
 
-    pending = deque([event])
-    resolutions: list[Resolution] = []
+        for rule in rules:
+            self.add(rule)
 
-    while pending:
-        root = pending.popleft()
-        resolution = resolve(world, root, before_rules)
-        resolutions.append(resolution)
+    def add(self, rule: Rule) -> None:
+        """Add a rule while preserving its relative phase order."""
 
-        pending.extend(
-            _run_reactions(
-                world,
-                resolution,
-                react_rules,
-            )
-        )
-
-    return tuple(resolutions)
-
-
-def _partition_rules(
-    rules: Iterable[Rule],
-) -> tuple[
-    tuple[BeforeRule, ...],
-    tuple[ReactRule[Any], ...],
-]:
-    before: list[BeforeRule] = []
-    react: list[ReactRule[Any]] = []
-
-    for rule in rules:
         if isinstance(rule, (RequireRule, RejectRule)):
-            before.append(rule)
+            self._before_rules.append(rule)
         elif isinstance(rule, ReactRule):
-            react.append(rule)
+            self._react_rules.append(rule)
         else:
             raise TypeError(
                 f"Unknown rule type: {type(rule).__name__}"
             )
 
-    return tuple(before), tuple(react)
+    def submit(
+        self,
+        world: World,
+        event: Event,
+    ) -> tuple[Resolution, ...]:
+        """Submit an event and process reactions until quiescence."""
 
+        pending = deque([event])
+        resolutions: list[Resolution] = []
 
-def _run_reactions(
-    world: World,
-    resolution: Resolution,
-    rules: tuple[ReactRule[Any], ...],
-) -> tuple[Event, ...]:
-    if resolution.accepted:
-        observed: Iterable[Event] = _accepted_events(resolution)
-    else:
-        observed = (_rejected_event(resolution),)
+        while pending:
+            root = pending.popleft()
 
-    emitted: list[Event] = []
+            resolution = resolve(
+                world,
+                root,
+                self._before_rules,
+            )
+            resolutions.append(resolution)
 
-    for event in observed:
-        for rule in rules:
-            if isinstance(event, rule.event_type):
-                emitted.extend(rule.run(world, event))
+            pending.extend(
+                self._run_reactions(world, resolution)
+            )
 
-    return tuple(emitted)
+        return tuple(resolutions)
+
+    def _run_reactions(
+        self,
+        world: World,
+        resolution: Resolution,
+    ) -> tuple[Event, ...]:
+        if resolution.accepted:
+            observed: Iterable[Event] = _accepted_events(resolution)
+        else:
+            observed = (_rejected_event(resolution),)
+
+        emitted: list[Event] = []
+
+        for event in observed:
+            for rule in self._react_rules:
+                if isinstance(event, rule.event_type):
+                    emitted.extend(rule.run(world, event))
+
+        return tuple(emitted)
 
 
 def _accepted_events(
     resolution: Resolution,
 ) -> Iterable[Event]:
-    """Yield committed events in execution order."""
-
     for child in resolution.children:
         yield from _accepted_events(child)
 
@@ -97,8 +93,6 @@ def _accepted_events(
 def _rejected_event(
     resolution: Resolution,
 ) -> Rejected:
-    """Describe the direct rejection within a root resolution."""
-
     event, rejection = _find_rejection(resolution)
 
     return Rejected(
@@ -111,8 +105,6 @@ def _rejected_event(
 def _find_rejection(
     resolution: Resolution,
 ) -> tuple[Event, Rejection]:
-    """Find the single direct rejection in an unsuccessful resolution."""
-
     if resolution.rejection is not None:
         return resolution.event, resolution.rejection
 
