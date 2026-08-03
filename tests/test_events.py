@@ -33,42 +33,42 @@ def test_events_are_immutable() -> None:
         move.entity = "crate"  # type: ignore[misc]
 
 
-def test_rejection_retains_reason_and_cause() -> None:
-    child = Rejection("blocked")
-    rejection = Rejection("required_event_rejected", cause=child)
-
-    assert rejection.reason == "required_event_rejected"
-    assert rejection.cause is child
-
-
-def test_rejected_retains_event_and_rejection() -> None:
-    move = Move("player", (2, 1))
+def test_rejection_retains_reason() -> None:
     rejection = Rejection("blocked")
 
-    rejected = Rejected(move, rejection)
+    assert rejection.reason == "blocked"
 
-    assert rejected.event is move
+
+def test_rejected_retains_root_event_and_rejection() -> None:
+    root = Move("player", (2, 1))
+    event = Set("player", "position", (2, 1))
+    rejection = Rejection("blocked")
+
+    rejected = Rejected(
+        root=root,
+        event=event,
+        rejection=rejection,
+    )
+
+    assert rejected.root is root
+    assert rejected.event is event
     assert rejected.rejection is rejection
-
-
-def test_base_event_does_not_change_world() -> None:
-    world = World({"player": {"health": 3}})
-
-    Move("player", (2, 1)).apply(world)
-
-    assert world.snapshot() == {"player": {"health": 3}}
 
 
 def test_rejected_does_not_change_world() -> None:
     world = World({"player": {"health": 3}})
-    rejected = Rejected(
-        Move("player", (2, 1)),
-        Rejection("blocked"),
-    )
 
-    rejected.apply(world)
+    Rejected(
+        root=Move("player", (2, 1)),
+        event=Set("player", "position", (2, 1)),
+        rejection=Rejection("blocked"),
+    ).apply(world)
 
-    assert world.snapshot() == {"player": {"health": 3}}
+    assert world.snapshot() == {
+        "player": {
+            "health": 3,
+        }
+    }
 
 
 def test_create_applies_to_world() -> None:

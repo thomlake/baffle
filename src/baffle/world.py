@@ -2,7 +2,7 @@
 
 from typing import cast
 
-from baffle.types import Components, ComponentValue, State
+from baffle.types import ComponentDict, ComponentValue, StateDict
 
 
 class _Missing:
@@ -13,9 +13,9 @@ _MISSING = _Missing()
 
 
 class World:
-    """A mutable working copy of world state."""
+    """Mutable world state."""
 
-    def __init__(self, state: State) -> None:
+    def __init__(self, state: StateDict) -> None:
         self._state = {
             entity: dict(components)
             for entity, components in state.items()
@@ -28,12 +28,6 @@ class World:
         *,
         default: ComponentValue | _Missing = _MISSING,
     ) -> ComponentValue:
-        """Return a component value.
-
-        Missing entities and missing components both raise ``KeyError`` unless a
-        default is supplied.
-        """
-
         try:
             return self._state[entity][component]
         except KeyError:
@@ -42,23 +36,13 @@ class World:
 
             return cast(ComponentValue, default)
 
-    def create(self, entity: str, components: Components) -> None:
-        """Create an entity.
-
-        Raises ``ValueError`` if the entity already exists.
-        """
-
+    def create(self, entity: str, components: ComponentDict) -> None:
         if entity in self._state:
             raise ValueError(f"Entity already exists: {entity}")
 
         self._state[entity] = dict(components)
 
     def delete(self, entity: str) -> None:
-        """Delete an entity.
-
-        Raises ``KeyError`` if the entity does not exist.
-        """
-
         del self._state[entity]
 
     def set(
@@ -67,15 +51,20 @@ class World:
         component: str,
         value: ComponentValue,
     ) -> None:
-        """Set or create a component on an existing entity.
-
-        Raises ``KeyError`` if the entity does not exist.
-        """
-
         self._state[entity][component] = value
 
+    def copy(self) -> World:
+        """Return an independent working copy."""
+
+        return World(self._state)
+
+    def _replace(self, other: World) -> None:
+        """Replace this world with an independent copy of another world."""
+
+        self._state = other.snapshot()
+
     def snapshot(self) -> dict[str, dict[str, ComponentValue]]:
-        """Return an independent snapshot of the current state."""
+        """Return an independent serializable snapshot."""
 
         return {
             entity: dict(components)

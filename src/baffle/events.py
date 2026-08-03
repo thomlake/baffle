@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 
-from baffle.types import Components, ComponentValue
+from baffle.types import ComponentDict, ComponentValue
 from baffle.world import World
 
 
@@ -23,13 +23,13 @@ class Rejection:
     """The reason a rule rejected an event."""
 
     reason: str
-    cause: Rejection | None = None
 
 
 @dataclass(frozen=True)
 class Rejected(Event):
-    """Report that an event was rejected."""
+    """Report the direct rejection within a root transaction."""
 
+    root: Event
     event: Event
     rejection: Rejection
 
@@ -39,7 +39,7 @@ class Create(Event):
     """Create an entity."""
 
     entity: str
-    components: Components = field(default_factory=dict)
+    components: ComponentDict = field(default_factory=dict)
 
     def apply(self, world: World) -> None:
         world.create(self.entity, self.components)

@@ -6,7 +6,6 @@ from typing import Any
 
 from baffle.events import Event, Rejection
 from baffle.rules import RejectRule, RequireRule
-from baffle.types import ComponentValue, State
 from baffle.world import World
 
 
@@ -18,49 +17,44 @@ class Resolution:
     """The causal result of resolving one event."""
 
     event: Event
-    children: tuple["Resolution", ...] = ()
+    children: tuple[Resolution, ...] = ()
     rejection: Rejection | None = None
 
     @property
     def accepted(self) -> bool:
-        return self.rejection is None
-
-
-@dataclass(frozen=True)
-class Transaction:
-    """The result of resolving one root event."""
-
-    resolution: Resolution
-    state: dict[str, dict[str, ComponentValue]]
+        return (
+            self.rejection is None
+            and all(child.accepted for child in self.children)
+        )
 
     @property
-    def committed(self) -> bool:
-        return self.resolution.accepted
+    def rejected(self) -> bool:
+        return self.rejection is not None
 
 
 def resolve(
-    state: State,
+    world: World,
     event: Event,
     rules: Iterable[BeforeRule] = (),
-) -> Transaction:
-    """Resolve one root event as an atomic transaction."""
+) -> Resolution:
+    """Atomically resolve one event and its requirements."""
 
-    original = {
-        entity: dict(components)
-        for entity, components in state.items()
-    }
-    world = World(original)
+    before_rules = tuple(rules)
 
-    resolution = _resolve(
-        world,
-        event,
-        tuple(rules),
-    )
+    for rule in before_rules:
+        if not isinstance(rule, (RequireRule, RejectRule)):
+            raise TypeError(
+                "resolve() accepts only RequireRule and RejectRule; "
+                f"received {type(rule).__name__}"
+            )
 
-    return Transaction(
-        resolution=resolution,
-        state=world.snapshot() if resolution.accepted else original,
-    )
+    working = world.copy()
+    resolution = _resolve(working, event, before_rules)
+
+    if resolution.accepted:
+        world._replace(working)
+
+    return resolution
 
 
 def _resolve(
@@ -75,22 +69,16 @@ def _resolve(
             continue
 
         if isinstance(rule, RequireRule):
-            # Drain the emitter before resolving anything so the rule observes
-            # one stable version of the world.
             required_events = tuple(rule.run(world, event))
 
             for required_event in required_events:
                 child = _resolve(world, required_event, rules)
                 children.append(child)
 
-                if child.rejection is not None:
+                if not child.accepted:
                     return Resolution(
                         event=event,
                         children=tuple(children),
-                        rejection=Rejection(
-                            reason="required_event_rejected",
-                            cause=child.rejection,
-                        ),
                     )
 
         elif isinstance(rule, RejectRule):
@@ -102,6 +90,11 @@ def _resolve(
                     children=tuple(children),
                     rejection=rejection,
                 )
+
+        else:
+            raise TypeError(
+                f"Unknown before rule: {type(rule).__name__}"
+            )
 
     event.apply(world)
 
