@@ -628,13 +628,15 @@ class TraceEntry:
     parent: int | None = None
 ```
 
-`parent` indexes into `Trace.entries`, and is `None` for the externally submitted event. The reaction alone cannot identify the parent, because two transactions may emit equal events. The index makes the tree of root transactions reconstructable:
+`parent` indexes into `Trace.entries`, and is `None` for the externally submitted event. The reaction alone cannot identify the parent, because two transactions may emit equal events. The index makes the chain of root transactions reconstructable:
 
 ```text
-[0] Move          parent=None
-[1] EnterTile     parent=0
-[2] Damage        parent=1
+[0] Move      parent=None   submitted
+[1] Damage    parent=0      a hazard reacted to the move
+[2] Die       parent=1      death reacted to the damage
 ```
+
+Entries are root transactions only. Required events are not entries; they live in the `Resolution` tree of the entry that required them.
 
 This preserves the two causal relationships in the engine:
 
