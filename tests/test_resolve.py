@@ -4,7 +4,15 @@ from dataclasses import dataclass
 import pytest
 
 from baffle.events import Event, Rejection, Set
-from baffle.resolve import resolve, Resolution
+from baffle.resolve import (
+    Requirement,
+    Resolution,
+    ResolutionLimitError,
+    ResolutionStatus,
+    Resolver,
+    ResolverConfig,
+    resolve,
+)
 from baffle.rules import ReactRule, RejectRule, RequireRule
 from baffle.world import World
 
@@ -26,6 +34,11 @@ class Step(Event):
     destination: tuple[int, int]
 
 
+@dataclass(frozen=True)
+class Chain(Event):
+    remaining: int
+
+
 def test_event_applies_when_accepted() -> None:
     world = World({"player": {"health": 3}})
 
@@ -34,17 +47,16 @@ def test_event_applies_when_accepted() -> None:
         Set("player", "health", 2),
     )
 
+    assert resolution.status is ResolutionStatus.ACCEPTED
     assert resolution.accepted
     assert not resolution.rejected
+    assert not resolution.aborted
     assert resolution.rejection is None
-    assert world.snapshot() == {
-        "player": {
-            "health": 2,
-        }
-    }
+    assert resolution.rejected_by is None
+    assert world.get("player", "health") == 2
 
 
-def test_required_events_resolve_before_parent() -> None:
+def test_required_events_record_rule_provenance() -> None:
     def require_move(
         world: World,
         event: Step,
@@ -61,6 +73,9 @@ def test_required_events_resolve_before_parent() -> None:
             event.destination,
         )
 
+    step_rule = RequireRule(Step, require_move)
+    move_rule = RequireRule(Move, require_position)
+
     world = World(
         {
             "player": {
@@ -76,18 +91,27 @@ def test_required_events_resolve_before_parent() -> None:
     resolution = resolve(
         world,
         step,
-        [
-            RequireRule(Step, require_move),
-            RequireRule(Move, require_position),
-        ],
+        [step_rule, move_rule],
     )
 
-    assert resolution.accepted
+    assert resolution.status is ResolutionStatus.ACCEPTED
     assert world.get("player", "position") == (1, 0)
 
-    assert resolution.event == step
-    assert resolution.children[0].event == move
-    assert resolution.children[0].children[0].event == set_position
+    move_requirement = resolution.requirements[0]
+
+    assert move_requirement.rule is step_rule
+    assert move_requirement.resolution.event == move
+
+    position_requirement = (
+        move_requirement.resolution.requirements[0]
+    )
+
+    assert position_requirement.rule is move_rule
+    assert position_requirement.resolution.event == set_position
+    assert (
+        position_requirement.resolution.status
+        is ResolutionStatus.ACCEPTED
+    )
 
 
 def test_later_rules_see_previous_required_events() -> None:
@@ -127,7 +151,7 @@ def test_later_rules_see_previous_required_events() -> None:
         ],
     )
 
-    assert resolution.accepted
+    assert resolution.status is ResolutionStatus.ACCEPTED
     assert world.get("player", "position") == (1, 0)
 
 
@@ -151,26 +175,26 @@ def test_rule_order_is_shared_across_require_and_reject() -> None:
             event.destination,
         )
 
-    initial = {
-        "player": {
-            "position": (0, 0),
-        }
-    }
+    rejection_rule = RejectRule(Move, reject_wrong_position)
+    initial = {"player": {"position": (0, 0)}}
     world = World(initial)
 
     resolution = resolve(
         world,
         Move("player", (1, 0)),
         [
-            RejectRule(Move, reject_wrong_position),
+            rejection_rule,
             RequireRule(Move, update_position),
         ],
     )
 
-    assert not resolution.accepted
+    assert resolution.status is ResolutionStatus.REJECTED
     assert resolution.rejected
-    assert resolution.rejection == Rejection("position_not_updated")
-    assert resolution.children == ()
+    assert resolution.rejection == Rejection(
+        "position_not_updated"
+    )
+    assert resolution.rejected_by is rejection_rule
+    assert resolution.requirements == ()
     assert world.snapshot() == initial
 
 
@@ -193,13 +217,7 @@ def test_one_rule_observes_one_world_version() -> None:
 
         yield Set(event.entity, "health", 1)
 
-    world = World(
-        {
-            "player": {
-                "health": 3,
-            }
-        }
-    )
+    world = World({"player": {"health": 3}})
 
     resolution = resolve(
         world,
@@ -207,7 +225,7 @@ def test_one_rule_observes_one_world_version() -> None:
         [RequireRule(Move, update_health)],
     )
 
-    assert resolution.accepted
+    assert resolution.status is ResolutionStatus.ACCEPTED
     assert observations == [3, 3]
     assert world.get("player", "health") == 1
 
@@ -225,36 +243,35 @@ def test_direct_rejection_discards_required_changes() -> None:
     ) -> Rejection:
         return Rejection("blocked")
 
-    initial = {
-        "player": {
-            "health": 3,
-        }
-    }
+    require_rule = RequireRule(Move, spend_health)
+    reject_rule = RejectRule(Move, reject_move)
+
+    initial = {"player": {"health": 3}}
     world = World(initial)
     move = Move("player", (1, 0))
 
     resolution = resolve(
         world,
         move,
-        [
-            RequireRule(Move, spend_health),
-            RejectRule(Move, reject_move),
-        ],
+        [require_rule, reject_rule],
     )
 
-    assert not resolution.accepted
-    assert resolution.rejected
+    assert resolution.status is ResolutionStatus.REJECTED
     assert resolution.rejection == Rejection("blocked")
+    assert resolution.rejected_by is reject_rule
     assert world.snapshot() == initial
-
-    assert resolution.children == (
-        Resolution(
-            event=Set("player", "health", 2),
+    assert resolution.requirements == (
+        Requirement(
+            rule=require_rule,
+            resolution=Resolution(
+                event=Set("player", "health", 2),
+                status=ResolutionStatus.ACCEPTED,
+            ),
         ),
     )
 
 
-def test_child_rejection_makes_parent_unsuccessful() -> None:
+def test_child_rejection_aborts_parent() -> None:
     def require_move(
         world: World,
         event: Step,
@@ -267,6 +284,9 @@ def test_child_rejection_makes_parent_unsuccessful() -> None:
     ) -> Rejection:
         return Rejection("blocked")
 
+    require_rule = RequireRule(Step, require_move)
+    reject_rule = RejectRule(Move, reject_move)
+
     initial = {"player": {}}
     world = World(initial)
 
@@ -276,25 +296,24 @@ def test_child_rejection_makes_parent_unsuccessful() -> None:
     resolution = resolve(
         world,
         step,
-        [
-            RequireRule(Step, require_move),
-            RejectRule(Move, reject_move),
-        ],
+        [require_rule, reject_rule],
     )
 
-    assert not resolution.accepted
+    assert resolution.status is ResolutionStatus.ABORTED
+    assert resolution.aborted
     assert not resolution.rejected
     assert resolution.rejection is None
+    assert resolution.rejected_by is None
     assert world.snapshot() == initial
 
-    assert len(resolution.children) == 1
+    requirement = resolution.requirements[0]
+    child = requirement.resolution
 
-    child = resolution.children[0]
-
+    assert requirement.rule is require_rule
     assert child.event == move
-    assert not child.accepted
-    assert child.rejected
+    assert child.status is ResolutionStatus.REJECTED
     assert child.rejection == Rejection("blocked")
+    assert child.rejected_by is reject_rule
 
 
 def test_requirements_after_rejection_are_not_attempted() -> None:
@@ -341,9 +360,12 @@ def test_requirements_after_rejection_are_not_attempted() -> None:
         ],
     )
 
-    assert not resolution.accepted
+    assert resolution.status is ResolutionStatus.ABORTED
     assert attempted == [First()]
-    assert [child.event for child in resolution.children] == [First()]
+    assert [
+        requirement.resolution.event
+        for requirement in resolution.requirements
+    ] == [First()]
 
 
 def test_rules_match_event_subclasses() -> None:
@@ -365,7 +387,7 @@ def test_rules_match_event_subclasses() -> None:
         [RequireRule(Move, observe_move)],
     )
 
-    assert resolution.accepted
+    assert resolution.status is ResolutionStatus.ACCEPTED
     assert called == [event]
 
 
@@ -381,35 +403,201 @@ def test_apply_exception_propagates_without_committing() -> None:
     assert world.snapshot() == {}
 
 
-def test_resolve_rejects_react_rules() -> None:
+def test_resolver_rejects_react_rules() -> None:
     def react(
         world: World,
         event: Move,
     ) -> Iterable[Event]:
         return ()
 
-    world = World({"player": {}})
-
     with pytest.raises(
         TypeError,
         match="accepts only RequireRule and RejectRule",
     ):
-        resolve(
-            world,
-            Move("player", (1, 0)),
+        Resolver(
             [ReactRule(Move, react)],  # type: ignore[list-item]
         )
 
 
-def test_resolve_rejects_unknown_rule_types() -> None:
-    world = World({"player": {}})
+def test_resolver_config_has_default_limits() -> None:
+    config = ResolverConfig()
+
+    assert config.max_depth == 100
+    assert config.max_events == 1_000
+
+
+def test_resolver_uses_default_config_when_none() -> None:
+    resolver = Resolver(config=None)
+    world = World({"player": {"health": 3}})
+
+    resolution = resolver.resolve(
+        world,
+        Set("player", "health", 2),
+    )
+
+    assert resolution.status is ResolutionStatus.ACCEPTED
+
+
+def test_max_depth_zero_allows_root_event() -> None:
+    world = World({"player": {"health": 3}})
+
+    resolution = resolve(
+        world,
+        Set("player", "health", 2),
+        config=ResolverConfig(max_depth=0),
+    )
+
+    assert resolution.status is ResolutionStatus.ACCEPTED
+
+
+def test_max_depth_zero_rejects_required_child() -> None:
+    def require_position(
+        world: World,
+        event: Move,
+    ) -> Iterable[Event]:
+        yield Set(
+            event.entity,
+            "position",
+            event.destination,
+        )
+
+    initial = {"player": {"position": (0, 0)}}
+    world = World(initial)
 
     with pytest.raises(
-        TypeError,
-        match="accepts only RequireRule and RejectRule",
+        ResolutionLimitError,
+        match="Maximum requirement depth exceeded: 0",
     ):
         resolve(
             world,
             Move("player", (1, 0)),
-            [object()],  # type: ignore[list-item]
+            [RequireRule(Move, require_position)],
+            config=ResolverConfig(max_depth=0),
         )
+
+    assert world.snapshot() == initial
+
+
+def test_max_depth_allows_event_at_configured_depth() -> None:
+    def require_chain(
+        world: World,
+        event: Chain,
+    ) -> Iterable[Event]:
+        if event.remaining > 0:
+            yield Chain(event.remaining - 1)
+
+    world = World({})
+
+    resolution = resolve(
+        world,
+        Chain(2),
+        [RequireRule(Chain, require_chain)],
+        config=ResolverConfig(max_depth=2),
+    )
+
+    assert resolution.status is ResolutionStatus.ACCEPTED
+
+    child = resolution.requirements[0].resolution
+    grandchild = child.requirements[0].resolution
+
+    assert child.event == Chain(1)
+    assert grandchild.event == Chain(0)
+
+
+def test_max_events_counts_required_events() -> None:
+    def require_position(
+        world: World,
+        event: Move,
+    ) -> Iterable[Event]:
+        yield Set(
+            event.entity,
+            "position",
+            event.destination,
+        )
+
+    initial = {"player": {"position": (0, 0)}}
+    world = World(initial)
+
+    with pytest.raises(
+        ResolutionLimitError,
+        match="Maximum event count exceeded: 1",
+    ):
+        resolve(
+            world,
+            Move("player", (1, 0)),
+            [RequireRule(Move, require_position)],
+            config=ResolverConfig(max_events=1),
+        )
+
+    assert world.snapshot() == initial
+
+
+def test_resolver_shares_event_budget_across_calls() -> None:
+    resolver = Resolver(
+        config=ResolverConfig(max_events=2),
+    )
+    world = World({"player": {"health": 3}})
+
+    first = resolver.resolve(
+        world,
+        Set("player", "health", 2),
+    )
+    second = resolver.resolve(
+        world,
+        Set("player", "health", 1),
+    )
+
+    assert first.status is ResolutionStatus.ACCEPTED
+    assert second.status is ResolutionStatus.ACCEPTED
+
+    with pytest.raises(
+        ResolutionLimitError,
+        match="Maximum event count exceeded: 2",
+    ):
+        resolver.resolve(
+            world,
+            Set("player", "health", 0),
+        )
+
+    assert world.get("player", "health") == 1
+
+
+def test_convenience_resolve_uses_fresh_event_budget() -> None:
+    world = World({"player": {"health": 3}})
+    config = ResolverConfig(max_events=1)
+
+    first = resolve(
+        world,
+        Set("player", "health", 2),
+        config=config,
+    )
+    second = resolve(
+        world,
+        Set("player", "health", 1),
+        config=config,
+    )
+
+    assert first.status is ResolutionStatus.ACCEPTED
+    assert second.status is ResolutionStatus.ACCEPTED
+
+
+@pytest.mark.parametrize("max_depth", [-1, -10])
+def test_resolver_config_rejects_negative_max_depth(
+    max_depth: int,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="max_depth must be non-negative",
+    ):
+        ResolverConfig(max_depth=max_depth)
+
+
+@pytest.mark.parametrize("max_events", [0, -1])
+def test_resolver_config_rejects_non_positive_max_events(
+    max_events: int,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="max_events must be positive",
+    ):
+        ResolverConfig(max_events=max_events)

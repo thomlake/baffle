@@ -3,8 +3,13 @@ from dataclasses import dataclass
 
 import pytest
 
-from baffle.engine import Engine
+from baffle.engine import Engine, Reaction, Trace
 from baffle.events import Event, Rejected, Rejection, Set
+from baffle.resolve import (
+    ResolutionLimitError,
+    ResolutionStatus,
+    ResolverConfig,
+)
 from baffle.rules import ReactRule, RejectRule, RequireRule
 from baffle.world import World
 
@@ -26,46 +31,48 @@ class Marker(Event):
     name: str
 
 
-def test_reaction_events_run_as_new_root_resolutions() -> None:
-    def require_position(
-        world: World,
-        event: Move,
-    ) -> Iterable[Event]:
-        yield Set(event.entity, "position", event.destination)
+def test_submit_returns_trace_with_external_root_first() -> None:
+    engine = Engine()
+    world = World({})
+    move = Move("player", (1, 0))
 
+    trace = engine.submit(world, move)
+
+    assert isinstance(trace, Trace)
+    assert len(trace.entries) == 1
+    assert trace.entries[0].reaction is None
+    assert trace.entries[0].resolution.event == move
+    assert trace.root is trace.entries[0].resolution
+    assert trace.root.status is ResolutionStatus.ACCEPTED
+
+
+def test_reaction_event_records_rule_and_source() -> None:
     def mark_moved(
         world: World,
         event: Move,
     ) -> Iterable[Event]:
         yield Set(event.entity, "moved", True)
 
-    engine = Engine(
-        [
-            RequireRule(Move, require_position),
-            ReactRule(Move, mark_moved),
-        ]
-    )
-    world = World(
-        {
-            "player": {
-                "position": (0, 0),
-            }
-        }
-    )
+    reaction_rule = ReactRule(Move, mark_moved)
+    engine = Engine([reaction_rule])
+    world = World({"player": {}})
     move = Move("player", (1, 0))
 
-    resolutions = engine.submit(world, move)
+    trace = engine.submit(world, move)
 
-    assert world.snapshot() == {
-        "player": {
-            "position": (1, 0),
-            "moved": True,
-        }
-    }
-    assert [resolution.event for resolution in resolutions] == [
-        move,
-        Set("player", "moved", True),
-    ]
+    assert len(trace.entries) == 2
+
+    reaction_entry = trace.entries[1]
+
+    assert reaction_entry.resolution.event == Set(
+        "player",
+        "moved",
+        True,
+    )
+    assert reaction_entry.reaction == Reaction(
+        rule=reaction_rule,
+        source=move,
+    )
 
 
 def test_accepted_events_react_child_before_parent() -> None:
@@ -97,13 +104,7 @@ def test_accepted_events_react_child_before_parent() -> None:
             ReactRule(Event, observe),
         ]
     )
-    world = World(
-        {
-            "player": {
-                "position": (0, 0),
-            }
-        }
-    )
+    world = World({"player": {"position": (0, 0)}})
 
     step = Step("player", (1, 0))
     move = Move("player", (1, 0))
@@ -133,7 +134,6 @@ def test_reactions_observe_committed_state() -> None:
     ) -> Iterable[Event]:
         position = world.get(event.entity, "position")
         assert isinstance(position, tuple)
-
         observations.append(position)
         return ()
 
@@ -143,13 +143,7 @@ def test_reactions_observe_committed_state() -> None:
             ReactRule(Move, observe),
         ]
     )
-    world = World(
-        {
-            "player": {
-                "position": (0, 0),
-            }
-        }
-    )
+    world = World({"player": {"position": (0, 0)}})
 
     engine.submit(
         world,
@@ -159,7 +153,7 @@ def test_reactions_observe_committed_state() -> None:
     assert observations == [(1, 0)]
 
 
-def test_rejection_emits_one_rejected_event() -> None:
+def test_rejection_emits_one_rejected_event_with_root_and_cause() -> None:
     observed: list[Rejected] = []
 
     def require_move(
@@ -193,9 +187,9 @@ def test_rejection_emits_one_rejected_event() -> None:
     step = Step("player", (1, 0))
     move = Move("player", (1, 0))
 
-    resolutions = engine.submit(world, step)
+    trace = engine.submit(world, step)
 
-    assert len(resolutions) == 1
+    assert trace.root.status is ResolutionStatus.ABORTED
     assert observed == [
         Rejected(
             root=step,
@@ -205,40 +199,63 @@ def test_rejection_emits_one_rejected_event() -> None:
     ]
 
 
-def test_directly_rejected_root_reports_same_root_and_event() -> None:
-    observed: list[Rejected] = []
-
+def test_directly_rejected_root_has_rejected_status() -> None:
     def reject_move(
         world: World,
         event: Move,
     ) -> Rejection:
         return Rejection("blocked")
 
-    def observe(
-        world: World,
-        event: Rejected,
-    ) -> Iterable[Event]:
-        observed.append(event)
-        return ()
-
     engine = Engine(
         [
             RejectRule(Move, reject_move),
-            ReactRule(Rejected, observe),
         ]
     )
     world = World({"player": {}})
     move = Move("player", (1, 0))
 
-    engine.submit(world, move)
+    trace = engine.submit(world, move)
 
-    assert observed == [
-        Rejected(
-            root=move,
-            event=move,
-            rejection=Rejection("blocked"),
-        )
-    ]
+    assert trace.root.status is ResolutionStatus.REJECTED
+    assert trace.root.rejection == Rejection("blocked")
+
+
+def test_rejected_reaction_records_rejected_as_source() -> None:
+    def reject_move(
+        world: World,
+        event: Move,
+    ) -> Rejection:
+        return Rejection("blocked")
+
+    def mark_blocked(
+        world: World,
+        event: Rejected,
+    ) -> Iterable[Event]:
+        yield Set("player", "blocked", True)
+
+    reaction_rule = ReactRule(Rejected, mark_blocked)
+    engine = Engine(
+        [
+            RejectRule(Move, reject_move),
+            reaction_rule,
+        ]
+    )
+    world = World({"player": {}})
+    move = Move("player", (1, 0))
+
+    trace = engine.submit(world, move)
+
+    expected_source = Rejected(
+        root=move,
+        event=move,
+        rejection=Rejection("blocked"),
+    )
+
+    assert trace.entries[1].reaction == Reaction(
+        rule=reaction_rule,
+        source=expected_source,
+    )
+    assert world.get("player", "blocked") is True
 
 
 def test_rejection_reactions_observe_rolled_back_state() -> None:
@@ -262,7 +279,6 @@ def test_rejection_reactions_observe_rolled_back_state() -> None:
     ) -> Iterable[Event]:
         health = world.get("player", "health")
         assert isinstance(health, int)
-
         observations.append(health)
         return ()
 
@@ -273,13 +289,7 @@ def test_rejection_reactions_observe_rolled_back_state() -> None:
             ReactRule(Rejected, observe),
         ]
     )
-    world = World(
-        {
-            "player": {
-                "health": 3,
-            }
-        }
-    )
+    world = World({"player": {"health": 3}})
 
     engine.submit(
         world,
@@ -319,13 +329,7 @@ def test_rolled_back_events_do_not_trigger_accepted_reactions() -> None:
             ReactRule(Set, observe_set),
         ]
     )
-    world = World(
-        {
-            "player": {
-                "health": 3,
-            }
-        }
-    )
+    world = World({"player": {"health": 3}})
 
     engine.submit(
         world,
@@ -333,49 +337,9 @@ def test_rolled_back_events_do_not_trigger_accepted_reactions() -> None:
     )
 
     assert observed == []
-    assert world.get("player", "health") == 3
-
-
-def test_rejected_reaction_events_run_as_new_root_resolutions() -> None:
-    def reject_move(
-        world: World,
-        event: Move,
-    ) -> Rejection:
-        return Rejection("blocked")
-
-    def mark_blocked(
-        world: World,
-        event: Rejected,
-    ) -> Iterable[Event]:
-        yield Set("player", "blocked", True)
-
-    engine = Engine(
-        [
-            RejectRule(Move, reject_move),
-            ReactRule(Rejected, mark_blocked),
-        ]
-    )
-    world = World({"player": {}})
-    move = Move("player", (1, 0))
-
-    resolutions = engine.submit(world, move)
-
-    assert world.snapshot() == {
-        "player": {
-            "blocked": True,
-        }
-    }
-    assert [resolution.event for resolution in resolutions] == [
-        move,
-        Set("player", "blocked", True),
-    ]
-    assert not resolutions[0].accepted
-    assert resolutions[1].accepted
 
 
 def test_reaction_roots_are_processed_fifo() -> None:
-    observed: list[str] = []
-
     def emit_siblings(
         world: World,
         event: Move,
@@ -390,32 +354,26 @@ def test_reaction_roots_are_processed_fifo() -> None:
         if event.name == "a":
             yield Marker("c")
 
-    def observe(
-        world: World,
-        event: Marker,
-    ) -> Iterable[Event]:
-        observed.append(event.name)
-        return ()
-
     engine = Engine(
         [
             ReactRule(Move, emit_siblings),
             ReactRule(Marker, emit_child),
-            ReactRule(Marker, observe),
         ]
     )
     world = World({})
     move = Move("player", (1, 0))
 
-    resolutions = engine.submit(world, move)
+    trace = engine.submit(world, move)
 
-    assert [resolution.event for resolution in resolutions] == [
+    assert [
+        entry.resolution.event
+        for entry in trace.entries
+    ] == [
         move,
         Marker("a"),
         Marker("b"),
         Marker("c"),
     ]
-    assert observed == ["a", "b", "c"]
 
 
 def test_all_reactions_to_one_resolution_observe_same_state() -> None:
@@ -456,27 +414,38 @@ def test_all_reactions_to_one_resolution_observe_same_state() -> None:
     assert world.get("player", "marked") is True
 
 
-def test_engine_accepts_rules_at_construction() -> None:
-    observed: list[Move] = []
-
-    def observe(
+def test_engine_event_budget_spans_reaction_roots() -> None:
+    def emit_marker(
         world: World,
         event: Move,
     ) -> Iterable[Event]:
-        observed.append(event)
-        return ()
+        yield Marker("reaction")
 
     engine = Engine(
-        [
-            ReactRule(Move, observe),
-        ]
+        [ReactRule(Move, emit_marker)],
+        resolver_config=ResolverConfig(max_events=1),
     )
     world = World({})
     move = Move("player", (1, 0))
 
-    engine.submit(world, move)
+    with pytest.raises(
+        ResolutionLimitError,
+        match="Maximum event count exceeded: 1",
+    ):
+        engine.submit(world, move)
 
-    assert observed == [move]
+
+def test_engine_gets_fresh_budget_for_each_submission() -> None:
+    engine = Engine(
+        resolver_config=ResolverConfig(max_events=1),
+    )
+    world = World({})
+
+    first = engine.submit(world, Marker("first"))
+    second = engine.submit(world, Marker("second"))
+
+    assert first.root.status is ResolutionStatus.ACCEPTED
+    assert second.root.status is ResolutionStatus.ACCEPTED
 
 
 def test_rule_can_be_added_after_construction() -> None:
@@ -498,42 +467,6 @@ def test_rule_can_be_added_after_construction() -> None:
     engine.submit(world, move)
 
     assert observed == [move]
-
-
-def test_added_before_rules_preserve_shared_order() -> None:
-    def reject_unmoved(
-        world: World,
-        event: Move,
-    ) -> Rejection | None:
-        if world.get(event.entity, "position") != event.destination:
-            return Rejection("position_not_updated")
-
-        return None
-
-    def require_position(
-        world: World,
-        event: Move,
-    ) -> Iterable[Event]:
-        yield Set(event.entity, "position", event.destination)
-
-    engine = Engine()
-    engine.add(RejectRule(Move, reject_unmoved))
-    engine.add(RequireRule(Move, require_position))
-
-    initial = {
-        "player": {
-            "position": (0, 0),
-        }
-    }
-    world = World(initial)
-
-    resolutions = engine.submit(
-        world,
-        Move("player", (1, 0)),
-    )
-
-    assert not resolutions[0].accepted
-    assert world.snapshot() == initial
 
 
 def test_engine_rejects_unknown_rule_at_construction() -> None:
