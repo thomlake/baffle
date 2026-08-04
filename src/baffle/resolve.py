@@ -3,18 +3,43 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from baffle.events import Event, Rejection
 from baffle.rules import RejectRule, RequireRule
 from baffle.world import World
+
+if TYPE_CHECKING:
+    from baffle.engine import Trace
 
 
 type BeforeRule = RequireRule[Any] | RejectRule[Any]
 
 
 class ResolutionLimitError(RuntimeError):
-    """Raised when event resolution exceeds a configured limit."""
+    """Raised when event resolution exceeds a configured limit.
+
+    A limit can be exceeded partway through a submission, after earlier root
+    transactions have already committed. The attached context describes what
+    happened so callers are not left with an advanced world and no record of
+    how it got there.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        event: Event | None = None,
+        trace: "Trace | None" = None,
+    ) -> None:
+        super().__init__(message)
+
+        # The event whose resolution hit the limit. Set by the resolver.
+        self.event = event
+
+        # Root transactions that committed before the limit. Only the engine
+        # tracks these, so it attaches them on the way out.
+        self.trace = trace
 
 
 @dataclass(frozen=True)
@@ -70,6 +95,27 @@ class Resolution:
     def aborted(self) -> bool:
         return self.status is ResolutionStatus.ABORTED
 
+    @property
+    def rejected_resolution(self) -> "Resolution | None":
+        """The resolution a rule directly rejected, or None if accepted.
+
+        Returns `self` when this resolution is the rejected one, so callers
+        read `rejection` and `rejected_by` the same way whether a rule
+        rejected this event or one of its requirements.
+
+        Requirements are ordered and short-circuiting, so an unsuccessful
+        resolution has exactly one unsuccessful requirement to follow.
+        """
+
+        if self.status is ResolutionStatus.REJECTED:
+            return self
+
+        for requirement in self.requirements:
+            if not requirement.resolution.accepted:
+                return requirement.resolution.rejected_resolution
+
+        return None
+
 
 class Resolver:
     """Resolve events atomically using a shared event budget."""
@@ -98,15 +144,15 @@ class Resolver:
     ) -> Resolution:
         """Atomically resolve one event and its requirements."""
 
-        working = world.copy()
+        transaction = world.transaction()
         resolution = self._resolve(
-            working,
+            transaction.world,
             event,
             depth=0,
         )
 
         if resolution.accepted:
-            world._replace(working)
+            transaction.commit()
 
         return resolution
 
@@ -117,8 +163,8 @@ class Resolver:
         *,
         depth: int,
     ) -> Resolution:
-        self._check_depth(depth)
-        self._consume_event()
+        self._check_depth(event, depth)
+        self._consume_event(event)
 
         requirements: list[Requirement] = []
 
@@ -177,18 +223,20 @@ class Resolver:
             requirements=tuple(requirements),
         )
 
-    def _check_depth(self, depth: int) -> None:
+    def _check_depth(self, event: Event, depth: int) -> None:
         if depth > self._config.max_depth:
             raise ResolutionLimitError(
                 "Maximum requirement depth exceeded: "
-                f"{self._config.max_depth}"
+                f"{self._config.max_depth}",
+                event=event,
             )
 
-    def _consume_event(self) -> None:
+    def _consume_event(self, event: Event) -> None:
         if self._remaining_events <= 0:
             raise ResolutionLimitError(
                 "Maximum event count exceeded: "
-                f"{self._config.max_events}"
+                f"{self._config.max_events}",
+                event=event,
             )
 
         self._remaining_events -= 1

@@ -5,11 +5,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from baffle.events import Event, Rejected, Rejection
+from baffle.events import Event, Rejected
 from baffle.resolve import (
     BeforeRule,
     Resolution,
-    ResolutionStatus,
+    ResolutionLimitError,
     Resolver,
     ResolverConfig,
 )
@@ -34,6 +34,12 @@ class TraceEntry:
 
     resolution: Resolution
     reaction: Reaction | None = None
+
+    # Index into `Trace.entries` of the transaction whose reaction produced
+    # this root. `None` for the externally submitted event. Reaction alone
+    # cannot identify the parent, because equal events may be emitted by
+    # more than one transaction.
+    parent: int | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,16 @@ class Engine:
         """Add a rule while preserving its phase-relative order."""
 
         if isinstance(rule, (RequireRule, RejectRule)):
+            # The engine reports rejections by handing a synthesized Rejected
+            # to react rules; it never resolves one. A before rule matching
+            # Rejected would therefore never run for an engine-reported
+            # rejection, while still running for a hand-emitted one.
+            if issubclass(rule.event_type, Rejected):
+                raise TypeError(
+                    "Rejected is observation-only; dispatch on it with "
+                    f"ReactRule, not {type(rule).__name__}"
+                )
+
             self._before_rules.append(rule)
         elif isinstance(rule, ReactRule):
             self._react_rules.append(rule)
@@ -93,24 +109,36 @@ class Engine:
             config=self._resolver_config,
         )
 
-        pending: deque[tuple[Event, Reaction | None]] = deque(
-            [(event, None)]
+        pending: deque[tuple[Event, Reaction | None, int | None]] = deque(
+            [(event, None, None)]
         )
         entries: list[TraceEntry] = []
 
         while pending:
-            root, reaction = pending.popleft()
-            resolution = resolver.resolve(world, root)
+            root, reaction, parent = pending.popleft()
+
+            # The index this root will occupy, so its reactions can point back.
+            index = len(entries)
+
+            try:
+                resolution = resolver.resolve(world, root)
+            except ResolutionLimitError as error:
+                # Roots resolved before the limit stay committed. Report them
+                # so the caller can see how the world reached its state.
+                error.trace = Trace(entries=tuple(entries))
+                raise
 
             entries.append(
                 TraceEntry(
                     resolution=resolution,
                     reaction=reaction,
+                    parent=parent,
                 )
             )
 
             pending.extend(
-                self._run_reactions(
+                (emitted, origin, index)
+                for emitted, origin in self._run_reactions(
                     world,
                     resolution,
                 )
@@ -167,34 +195,17 @@ def _rejected_event(
 ) -> Rejected:
     """Describe the direct rejection within a root resolution."""
 
-    event, rejection = _find_rejection(resolution)
+    rejected = resolution.rejected_resolution
+
+    # A REJECTED resolution always carries its rejection, so this only fires
+    # if an unsuccessful resolution was built without one.
+    if rejected is None or rejected.rejection is None:
+        raise ValueError(
+            "Unsuccessful resolution contains no direct rejection"
+        )
 
     return Rejected(
         root=resolution.event,
-        event=event,
-        rejection=rejection,
-    )
-
-
-def _find_rejection(
-    resolution: Resolution,
-) -> tuple[Event, Rejection]:
-    """Find the single direct rejection in an unsuccessful resolution."""
-
-    if resolution.status is ResolutionStatus.REJECTED:
-        if resolution.rejection is None:
-            raise ValueError(
-                "Rejected resolution has no rejection"
-            )
-
-        return resolution.event, resolution.rejection
-
-    for requirement in resolution.requirements:
-        child = requirement.resolution
-
-        if not child.accepted:
-            return _find_rejection(child)
-
-    raise ValueError(
-        "Unsuccessful resolution contains no direct rejection"
+        event=rejected.event,
+        rejection=rejected.rejection,
     )

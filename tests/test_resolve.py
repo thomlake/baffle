@@ -601,3 +601,83 @@ def test_resolver_config_rejects_non_positive_max_events(
         match="max_events must be positive",
     ):
         ResolverConfig(max_events=max_events)
+
+
+def test_accepted_resolution_has_no_rejected_resolution() -> None:
+    resolution = resolve(World({}), Move("player", (1, 0)))
+
+    assert resolution.accepted
+    assert resolution.rejected_resolution is None
+
+
+def test_directly_rejected_resolution_is_its_own_rejected_resolution() -> None:
+    def reject_move(world: World, event: Move) -> Rejection:
+        return Rejection("blocked")
+
+    rule = RejectRule(Move, reject_move)
+    resolution = resolve(
+        World({}),
+        Move("player", (1, 0)),
+        [rule],
+    )
+
+    assert resolution.rejected_resolution is resolution
+    assert resolution.rejected_resolution.rejection == Rejection("blocked")
+    assert resolution.rejected_resolution.rejected_by is rule
+
+
+def test_aborted_resolution_points_at_rejected_requirement() -> None:
+    def require_step(world: World, event: Move) -> Iterable[Event]:
+        yield Step(event.entity, event.destination)
+
+    def reject_step(world: World, event: Step) -> Rejection:
+        return Rejection("solid")
+
+    reject_rule = RejectRule(Step, reject_step)
+    move = Move("player", (1, 0))
+    step = Step("player", (1, 0))
+
+    resolution = resolve(
+        World({}),
+        move,
+        [RequireRule(Move, require_step), reject_rule],
+    )
+
+    rejected = resolution.rejected_resolution
+
+    assert resolution.aborted
+    assert rejected is not None
+    assert rejected.event == step
+    assert rejected.rejection == Rejection("solid")
+    assert rejected.rejected_by is reject_rule
+
+
+def test_rejected_resolution_descends_through_nested_aborts() -> None:
+    def require_move(world: World, event: Step) -> Iterable[Event]:
+        yield Move(event.entity, event.destination)
+
+    def require_set(world: World, event: Move) -> Iterable[Event]:
+        yield Set(event.entity, "position", event.destination)
+
+    def reject_set(world: World, event: Set) -> Rejection:
+        return Rejection("frozen")
+
+    resolution = resolve(
+        World({"player": {}}),
+        Step("player", (1, 0)),
+        [
+            RequireRule(Step, require_move),
+            RequireRule(Move, require_set),
+            RejectRule(Set, reject_set),
+        ],
+    )
+
+    rejected = resolution.rejected_resolution
+
+    assert rejected is not None
+    assert rejected.event == Set("player", "position", (1, 0))
+    assert rejected.rejection == Rejection("frozen")
+
+    # Every ancestor reports the same direct rejection.
+    middle = resolution.requirements[0].resolution
+    assert middle.rejected_resolution is rejected

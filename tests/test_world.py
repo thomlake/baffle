@@ -136,3 +136,71 @@ def test_set_rejects_missing_entity() -> None:
 
     with pytest.raises(KeyError):
         world.set("player", "health", 3)
+
+
+def test_contains_reports_entity_presence() -> None:
+    world = World({"player": {}})
+
+    assert "player" in world
+    assert "door" not in world
+
+
+def test_iteration_yields_entities() -> None:
+    world = World({"player": {}, "door": {}})
+
+    assert list(world) == ["player", "door"]
+    assert len(world) == 2
+
+
+def test_has_reports_component_presence() -> None:
+    world = World({"player": {"health": 3}})
+
+    assert world.has("player", "health")
+    assert not world.has("player", "position")
+    assert not world.has("door", "health")
+
+
+def test_components_returns_read_only_view() -> None:
+    world = World({"player": {"health": 3}})
+
+    components = world.components("player")
+
+    assert dict(components) == {"health": 3}
+
+    with pytest.raises(TypeError):
+        components["health"] = 1  # type: ignore[index]
+
+
+def test_components_view_reflects_later_changes() -> None:
+    world = World({"player": {}})
+
+    components = world.components("player")
+    world.set("player", "health", 3)
+
+    assert dict(components) == {"health": 3}
+
+
+def test_components_raises_for_missing_entity() -> None:
+    world = World({})
+
+    with pytest.raises(KeyError):
+        world.components("player")
+
+
+def test_uncommitted_transaction_leaves_world_unchanged() -> None:
+    world = World({"player": {"health": 3}})
+
+    transaction = world.transaction()
+    transaction.world.set("player", "health", 1)
+
+    assert world.get("player", "health") == 3
+
+
+def test_committed_transaction_replaces_world_state() -> None:
+    world = World({"player": {"health": 3}})
+
+    transaction = world.transaction()
+    transaction.world.set("player", "health", 1)
+    transaction.commit()
+
+    assert world.get("player", "health") == 1

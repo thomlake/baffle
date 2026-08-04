@@ -479,3 +479,227 @@ def test_engine_rejects_unknown_rule_when_added() -> None:
 
     with pytest.raises(TypeError, match="Unknown rule type"):
         engine.add(object())  # type: ignore[arg-type]
+
+
+def test_external_root_has_no_parent() -> None:
+    engine = Engine()
+    world = World({})
+
+    trace = engine.submit(world, Move("player", (1, 0)))
+
+    assert trace.entries[0].parent is None
+
+
+def test_reaction_roots_record_parent_entry() -> None:
+    def emit_siblings(
+        world: World,
+        event: Move,
+    ) -> Iterable[Event]:
+        yield Marker("a")
+        yield Marker("b")
+
+    def emit_child(
+        world: World,
+        event: Marker,
+    ) -> Iterable[Event]:
+        if event.name == "a":
+            yield Marker("c")
+
+    engine = Engine(
+        [
+            ReactRule(Move, emit_siblings),
+            ReactRule(Marker, emit_child),
+        ]
+    )
+    world = World({})
+
+    trace = engine.submit(world, Move("player", (1, 0)))
+
+    # move -> [a, b], a -> [c]
+    assert [entry.parent for entry in trace.entries] == [None, 0, 0, 1]
+
+
+def test_parent_disambiguates_equal_events_from_different_roots() -> None:
+    def emit_marker(
+        world: World,
+        event: Move,
+    ) -> Iterable[Event]:
+        yield Marker("shared")
+
+    def emit_move(
+        world: World,
+        event: Step,
+    ) -> Iterable[Event]:
+        yield Move(event.entity, event.destination)
+
+    engine = Engine(
+        [
+            ReactRule(Step, emit_move),
+            ReactRule(Move, emit_marker),
+        ]
+    )
+    world = World({})
+
+    trace = engine.submit(world, Step("player", (1, 0)))
+
+    # Both Move roots emit an identical Marker, so only the parent index
+    # distinguishes which transaction produced which.
+    assert [entry.resolution.event for entry in trace.entries] == [
+        Step("player", (1, 0)),
+        Move("player", (1, 0)),
+        Marker("shared"),
+    ]
+    assert [entry.parent for entry in trace.entries] == [None, 0, 1]
+
+
+def test_limit_error_carries_committed_roots_and_failing_event() -> None:
+    def cascade(
+        world: World,
+        event: Marker,
+    ) -> Iterable[Event]:
+        yield Marker(event.name + "!")
+
+    engine = Engine(
+        [ReactRule(Marker, cascade)],
+        resolver_config=ResolverConfig(max_events=3),
+    )
+    world = World({})
+
+    with pytest.raises(ResolutionLimitError) as error:
+        engine.submit(world, Marker("a"))
+
+    assert error.value.event == Marker("a!!!")
+
+    trace = error.value.trace
+    assert trace is not None
+    assert [entry.resolution.event for entry in trace.entries] == [
+        Marker("a"),
+        Marker("a!"),
+        Marker("a!!"),
+    ]
+
+
+def test_limit_error_trace_reflects_committed_state() -> None:
+    def cascade(
+        world: World,
+        event: Marker,
+    ) -> Iterable[Event]:
+        yield Set("counter", event.name, True)
+        yield Marker(event.name + "!")
+
+    engine = Engine(
+        [ReactRule(Marker, cascade)],
+        resolver_config=ResolverConfig(max_events=4),
+    )
+    world = World({"counter": {}})
+
+    with pytest.raises(ResolutionLimitError) as error:
+        engine.submit(world, Marker("a"))
+
+    trace = error.value.trace
+    assert trace is not None
+
+    committed = {
+        entry.resolution.event
+        for entry in trace.entries
+        if isinstance(entry.resolution.event, Set)
+    }
+
+    # Every committed change is accounted for by an entry in the trace.
+    assert committed == {
+        Set("counter", "a", True),
+        Set("counter", "a!", True),
+    }
+    assert world.snapshot() == {"counter": {"a": True, "a!": True}}
+
+
+def test_engine_rejects_require_rule_on_rejected() -> None:
+    def require_anything(
+        world: World,
+        event: Rejected,
+    ) -> Iterable[Event]:
+        return ()
+
+    with pytest.raises(TypeError, match="Rejected is observation-only"):
+        Engine([RequireRule(Rejected, require_anything)])
+
+
+def test_engine_rejects_reject_rule_on_rejected() -> None:
+    def reject_anything(
+        world: World,
+        event: Rejected,
+    ) -> Rejection | None:
+        return None
+
+    with pytest.raises(TypeError, match="Rejected is observation-only"):
+        Engine([RejectRule(Rejected, reject_anything)])
+
+
+def test_engine_rejects_before_rule_on_rejected_subclass() -> None:
+    @dataclass(frozen=True)
+    class Vetoed(Rejected):
+        pass
+
+    def require_anything(
+        world: World,
+        event: Vetoed,
+    ) -> Iterable[Event]:
+        return ()
+
+    with pytest.raises(TypeError, match="Rejected is observation-only"):
+        Engine([RequireRule(Vetoed, require_anything)])
+
+
+def test_engine_allows_react_rule_on_rejected() -> None:
+    observed: list[Rejected] = []
+
+    def reject_move(
+        world: World,
+        event: Move,
+    ) -> Rejection:
+        return Rejection("blocked")
+
+    def observe(
+        world: World,
+        event: Rejected,
+    ) -> Iterable[Event]:
+        observed.append(event)
+        return ()
+
+    engine = Engine(
+        [
+            RejectRule(Move, reject_move),
+            ReactRule(Rejected, observe),
+        ]
+    )
+    move = Move("player", (1, 0))
+
+    engine.submit(World({}), move)
+
+    assert observed == [
+        Rejected(
+            root=move,
+            event=move,
+            rejection=Rejection("blocked"),
+        )
+    ]
+
+
+def test_engine_allows_catch_all_before_rule() -> None:
+    """Event is not a subclass of Rejected, so catch-alls are not dead."""
+
+    observed: list[Event] = []
+
+    def observe(
+        world: World,
+        event: Event,
+    ) -> Iterable[Event]:
+        observed.append(event)
+        return ()
+
+    engine = Engine([RequireRule(Event, observe)])
+    move = Move("player", (1, 0))
+
+    engine.submit(World({}), move)
+
+    assert observed == [move]

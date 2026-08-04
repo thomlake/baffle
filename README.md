@@ -457,6 +457,13 @@ All reactions to one transaction run before any emitted event is submitted. They
 
 Reaction roots are processed in FIFO order.
 
+React rules are also the only way to observe a `Rejected` event. The engine synthesizes one to report a failed transaction and hands it to react rules; it never resolves it. A require or reject rule registered for `Rejected` would therefore never run, so `Engine` rejects one at registration:
+
+```python
+Engine([RequireRule(Rejected, ...)])
+# TypeError: Rejected is observation-only; dispatch on it with ReactRule
+```
+
 ## Rule ordering
 
 Require and reject rules share one ordered pre-execution phase.
@@ -526,6 +533,19 @@ if isinstance(rejected.event, EnterTile):
 ```
 
 Requirements are ordered and short-circuiting. Once one requirement fails, later requirements are not attempted.
+
+An unsuccessful resolution therefore has exactly one direct rejection, reachable from any ancestor:
+
+```python
+rejected = trace.root.rejected_resolution
+
+if rejected is not None:
+    rejected.event        # the event a rule rejected
+    rejected.rejection    # the modeled reason
+    rejected.rejected_by  # the rule responsible
+```
+
+`rejected_resolution` returns `None` for an accepted resolution and `self` for a directly rejected one, so `rejection` and `rejected_by` are read the same way whether a rule rejected this event or one of its requirements.
 
 ## Resolution status
 
@@ -598,6 +618,24 @@ class Reaction:
     source: Event
 ```
 
+Each entry also records which transaction produced it:
+
+```python
+@dataclass(frozen=True)
+class TraceEntry:
+    resolution: Resolution
+    reaction: Reaction | None = None
+    parent: int | None = None
+```
+
+`parent` indexes into `Trace.entries`, and is `None` for the externally submitted event. The reaction alone cannot identify the parent, because two transactions may emit equal events. The index makes the tree of root transactions reconstructable:
+
+```text
+[0] Move          parent=None
+[1] EnterTile     parent=0
+[2] Damage        parent=1
+```
+
 This preserves the two causal relationships in the engine:
 
 ```text
@@ -629,11 +667,34 @@ Read and mutation operations are intentionally small:
 ```python
 world.get(entity, component)
 world.get(entity, component, default=value)
+world.has(entity, component)
 
 world.create(entity, components)
 world.delete(entity)
 world.set(entity, component, value)
 ```
+
+A world is also a collection of entities, which is enough to scan without copying:
+
+```python
+entity in world
+len(world)
+
+occupants = [
+    entity
+    for entity in world
+    if world.get(entity, "position", default=None) == destination
+]
+```
+
+`components` returns a read-only view of one entity, not a copy:
+
+```python
+for component, value in world.components("player").items():
+    ...
+```
+
+Baffle deliberately stops here. Indexes and query languages belong in code built on top of the core.
 
 Rules should treat the world as read-only. State changes should be represented by events.
 
@@ -661,6 +722,18 @@ If any required event is rejected:
 working world is discarded
 ```
 
+This is expressed as a transaction. Rolling back is simply never committing, so a discarded working copy needs no cleanup:
+
+```python
+transaction = world.transaction()
+resolution = resolve_somehow(transaction.world, event)
+
+if resolution.accepted:
+    transaction.commit()
+```
+
+A committed transaction hands its state over rather than copying it again, so it must not be reused afterwards.
+
 Reaction-generated events are separate root transactions. Earlier roots may remain committed if a later root raises an exception or exceeds an execution limit.
 
 ## Execution limits
@@ -686,6 +759,18 @@ engine = Engine(
 Exceeding either limit raises `ResolutionLimitError`.
 
 Each call to `Engine.submit` receives a fresh event budget.
+
+A limit can be exceeded partway through a submission, after earlier root transactions have already committed. The error carries what happened, so a runaway cascade can be diagnosed rather than guessed at:
+
+```python
+try:
+    engine.submit(world, event)
+except ResolutionLimitError as error:
+    error.event  # the event whose resolution hit the limit
+    error.trace  # the root transactions that committed before it
+```
+
+The transaction that hit the limit is not among them. It is discarded like any other unsuccessful root, so `error.trace` accounts for exactly the changes visible in the world.
 
 ## Lower-level resolution
 
@@ -753,12 +838,13 @@ The current V1 core includes:
 * rejection handling;
 * reaction queues;
 * execution limits;
-* causal tracing and provenance.
+* causal tracing and provenance;
+* a typed public API exported from `baffle`.
 
 Planned V1 work includes:
 
 * explicit before/after rule priority;
-* public API cleanup;
+* a component value type that does not assume grid coordinates;
 * a movement, solids, and pushing example;
 * serialization and deterministic replay;
 * additional documentation.
