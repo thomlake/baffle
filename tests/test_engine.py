@@ -5,7 +5,7 @@ import pytest
 
 from baffle.engine import Engine, Reaction, Trace
 from baffle.events import Event, Rejected, Rejection, Set
-from baffle.resolve import (
+from baffle.resolution import (
     ResolutionLimitError,
     ResolutionStatus,
     ResolverConfig,

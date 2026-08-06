@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from baffle.events import Event, Rejected
-from baffle.resolve import (
+from baffle.resolution import (
     BeforeRule,
     Resolution,
     ResolutionLimitError,
@@ -138,7 +138,7 @@ class Engine:
 
             pending.extend(
                 (emitted, origin, index)
-                for emitted, origin in self._run_reactions(
+                for emitted, origin in self._collect_reactions(
                     world,
                     resolution,
                 )
@@ -146,7 +146,7 @@ class Engine:
 
         return Trace(entries=tuple(entries))
 
-    def _run_reactions(
+    def _collect_reactions(
         self,
         world: World,
         resolution: Resolution,

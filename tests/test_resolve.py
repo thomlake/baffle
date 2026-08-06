@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import pytest
 
 from baffle.events import Event, Rejection, Set
-from baffle.resolve import (
+from baffle.resolution import (
     Requirement,
     Resolution,
     ResolutionLimitError,
@@ -621,6 +621,7 @@ def test_directly_rejected_resolution_is_its_own_rejected_resolution() -> None:
         [rule],
     )
 
+    assert resolution.rejected_resolution is not None
     assert resolution.rejected_resolution is resolution
     assert resolution.rejected_resolution.rejection == Rejection("blocked")
     assert resolution.rejected_resolution.rejected_by is rule

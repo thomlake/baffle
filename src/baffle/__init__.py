@@ -2,7 +2,7 @@
 
 from baffle.engine import Engine, Reaction, Trace, TraceEntry
 from baffle.events import Create, Delete, Event, Rejected, Rejection, Set
-from baffle.resolve import (
+from baffle.resolution import (
     Requirement,
     Resolution,
     ResolutionLimitError,
