@@ -1,22 +1,26 @@
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 from typing import cast
+
+import readchar
 
 from baffle import (
     Engine,
     Event,
-    Rejected,
     Rejection,
     RejectRule,
     RequireRule,
-    ReactRule,
-    ResolutionStatus,
     Set,
     World,
 )
 
 
+# ------------ #
+# Vector + Ops #
+# ------------ #
+
 type Vec2 = tuple[int, int]
+
 
 def scale(a: int, x: Vec2) -> Vec2:
     return a*x[0], a*x[1]
@@ -43,33 +47,17 @@ def subtract(a: Vec2, b: Vec2) -> Vec2:
     return a[0] - b[0], a[1] - b[1]
 
 
-class Direction(StrEnum):
-    UP = "up"
-    DOWN = "down"
-    LEFT = "left"
-    RIGHT = "right"
+# -------- #
+# Entities #
+# -------- #
 
-
-DIRECTIONS: dict[Direction, Vec2] = {
-    Direction.UP: (0, -1),
-    Direction.DOWN: (0, 1),
-    Direction.LEFT: (-1, 0),
-    Direction.RIGHT: (1, 0),
-}
-
-CONTROLS = {
-    "w": Direction.UP,
-    "a": Direction.LEFT,
-    "s": Direction.DOWN,
-    "d": Direction.RIGHT,
-}
-
-
-# Entities
 GAME = "game"
 PLAYER = "player"
 
-# Components
+# ---------- #
+# Components #
+# ---------- #
+
 WIDTH = "width"
 HEIGHT = "height"
 STATUS = "status"
@@ -84,10 +72,19 @@ PUSHER = "pusher"
 SYMBOL = "symbol"
 
 
+# ------ #
+# Events #
+# ------ #
+
 @dataclass(frozen=True)
 class Move(Event):
     entity: str
     destination: Vec2
+
+
+@dataclass(frozen=True)
+class Wait(Event):
+    entity: str
 
 
 @dataclass(frozen=True)
@@ -97,11 +94,19 @@ class EnterTile(Event):
     direction: tuple[int, int] | None = None
 
 
+# ------- #
+# Helpers #
+# ------- #
+
 def get_grid_bounds(world: World) -> Vec2:
     w = cast(int, world.get(GAME, WIDTH))
     h = cast(int, world.get(GAME, HEIGHT))
     return w, h
 
+
+# ----- #
+# Rules #
+# ----- #
 
 def game_over(world: World, event: Event):
     if (status := world.get(GAME, STATUS)) != STATUS_RUNNING:
@@ -164,18 +169,51 @@ def set_position(world: World, event: EnterTile):
     )
 
 
-def record_failed_move(world: World, event: Rejected):
-    if isinstance(event.root, Move):
-        yield Set(
-            entity=event.root.entity,
-            component="last_move_failed",
-            value=True,
-        )
+# --------- #
+# Interface #
+# --------- #
+
+class Direction(Enum):
+    UP = (0, -1)
+    DOWN = (0, 1)
+    LEFT = (-1, 0)
+    RIGHT = (1, 0)
+
+
+CONTROLS = {
+    readchar.key.UP: ("move", Direction.UP),
+    readchar.key.DOWN: ("move", Direction.DOWN),
+    readchar.key.LEFT: ("move", Direction.LEFT),
+    readchar.key.RIGHT: ("move", Direction.RIGHT),
+    "q": ("quit",),
+    "w": ("wait",),
+}
+
+CONTROL_DISPLAY = {
+    readchar.key.UP: "⏶",
+    readchar.key.DOWN: "⏷",
+    readchar.key.LEFT: "⏵",
+    readchar.key.RIGHT: "⏴",
+}
+
+
+def format_controls():
+    controls = []
+    for key, action in CONTROLS.items():
+        key = CONTROL_DISPLAY.get(key, key)
+        action_name, *action_rest = action
+        if action_rest:
+            direction, = action_rest
+            action_name = f"{action_name} {direction.name.lower()}"
+
+        controls.append(f"- {key}: {action_name}")
+
+    return "\n".join(controls)
 
 
 def format_world(world: World):
     w, h = get_grid_bounds(world)
-    grid: list[list[str]] = [w*['.'] for _ in range(h)]
+    grid: list[list[str]] = [w*["."] for _ in range(h)]
     legend: dict[str, list[str]] = {}
 
     for entity, components in reversed(list(world.entities.items())):
@@ -190,24 +228,29 @@ def format_world(world: World):
             else:
                 legend[symbol] = [entity]
 
-    grid_text = '\n'.join(''.join(row) for row in grid)
+    grid_text = "\n".join("".join(row) for row in grid)
     return grid_text
 
 
-def step(world: World, engine: Engine):
-    text = ''
+def get_input_event(world: World):
     while True:
-        text = input('').lower()
-        if text in CONTROLS:
-            break
+        print("Select action: ", end="", flush=True)
+        key = readchar.readkey()
 
-        print(f"input: {text!r} is invalid, select from {','.join(CONTROLS)}")
+        if action := CONTROLS.get(key):
+            match action:
+                case ("quit"):
+                    return None
+                case ("wait"):
+                    return Wait(PLAYER)
+                case ("move", direction):
+                    position = cast(Vec2, world.get(PLAYER, POSITION))
+                    return Move(PLAYER, destination=add(position, direction.value))
+                case _:
+                    raise ValueError(f"unknown action {action!r}")
 
-    direction = DIRECTIONS[CONTROLS[text]]
-    position = cast(Vec2, world.get(PLAYER, POSITION))
-    event = Move(PLAYER, destination=add(position, direction))
-    trace = engine.submit(world, event)
-    return trace
+        # Undefined key: ignore/reject and keep reading.
+        print(f"\n- invalid input {key!r}", flush=True)
 
 
 def main():
@@ -219,7 +262,6 @@ def main():
             RejectRule(EnterTile, solid),
             RejectRule(EnterTile, grid_bounds),
             RequireRule(EnterTile, set_position),
-            ReactRule(Rejected, record_failed_move),
         ]
     )
 
@@ -246,11 +288,24 @@ def main():
     )
 
     turn = 1
+    print("Controls:")
+    print(format_controls())
+    print()
     print("Turn:", turn)
     print(format_world(world))
     while True:
-        trace = step(world, engine)
+        print()
+        event = get_input_event(world)
+        print()
+        print()
+        if not event:
+            print("terminating...")
+            return
+
+        trace = engine.submit(world, event)
+        print("Trace:")
         print(trace)
+        print()
         print("Turn:", turn)
         print(format_world(world))
 
