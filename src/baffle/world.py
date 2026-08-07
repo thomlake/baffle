@@ -23,6 +23,10 @@ class World:
             for entity, components in state.items()
         }
 
+    @property
+    def entities(self) -> StateDict:
+        return self._state
+
     def __contains__(self, entity: str) -> bool:
         return entity in self._state
 
