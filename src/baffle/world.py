@@ -84,10 +84,8 @@ class World:
 
         return World(self._state)
 
-    def transaction(self) -> "Transaction":
-        """Begin an isolated transaction against this world."""
-
-        return Transaction(self)
+    def replace(self, world: 'World'):
+        self._state = world._state
 
     def snapshot(self) -> dict[str, dict[str, ComponentValue]]:
         """Return an independent serializable snapshot."""
@@ -96,26 +94,3 @@ class World:
             entity: dict(components)
             for entity, components in self._state.items()
         }
-
-
-class Transaction:
-    """An isolated working copy of a world.
-
-    Changes are visible only through `world` until `commit` is called.
-    Discarding a transaction needs no cleanup, so rolling back is simply
-    never committing.
-    """
-
-    def __init__(self, target: World) -> None:
-        self._target = target
-        self.world = target.copy()
-
-    def commit(self) -> None:
-        """Adopt the working state as the target world's state.
-
-        The transaction must not be used afterwards. Committing hands the
-        working state over rather than copying it a second time, so both
-        worlds share state once this returns.
-        """
-
-        self._target._state = self.world._state

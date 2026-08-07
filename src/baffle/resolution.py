@@ -144,15 +144,15 @@ class Resolver:
     ) -> Resolution:
         """Atomically resolve one event and its requirements."""
 
-        transaction = world.transaction()
+        world_copy = world.copy()
         resolution = self._resolve(
-            transaction.world,
+            world_copy,
             event,
             depth=0,
         )
 
         if resolution.accepted:
-            transaction.commit()
+            world.replace(world_copy)
 
         return resolution
 

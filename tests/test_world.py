@@ -187,20 +187,12 @@ def test_components_raises_for_missing_entity() -> None:
         world.components("player")
 
 
-def test_uncommitted_transaction_leaves_world_unchanged() -> None:
+def test_replace_replaces_world_state() -> None:
     world = World({"player": {"health": 3}})
 
-    transaction = world.transaction()
-    transaction.world.set("player", "health", 1)
-
+    world_copy = world.copy()
+    world_copy.set("player", "health", 1)
     assert world.get("player", "health") == 3
 
-
-def test_committed_transaction_replaces_world_state() -> None:
-    world = World({"player": {"health": 3}})
-
-    transaction = world.transaction()
-    transaction.world.set("player", "health", 1)
-    transaction.commit()
-
+    world.replace(world_copy)
     assert world.get("player", "health") == 1

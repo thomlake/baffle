@@ -58,7 +58,7 @@ def reject_solid_tiles(world: World, event: EnterTile) -> Rejection | None:
     return None
 
 
-def update_position(world: World, event: EnterTile) -> Iterable[Event]:
+def set_position(world: World, event: EnterTile) -> Iterable[Event]:
     yield Set(
         entity=event.entity,
         component="position",
@@ -79,7 +79,7 @@ engine = Engine(
     [
         RequireRule(Move, require_entry),
         RejectRule(EnterTile, reject_solid_tiles),
-        RequireRule(EnterTile, update_position),
+        RequireRule(EnterTile, set_position),
         ReactRule(Rejected, record_failed_move),
     ]
 )
