@@ -54,14 +54,11 @@ class Trace:
 def submit(
     world: World,
     event: Event,
-    ruleset: Ruleset | None = None,
+    ruleset: Ruleset,
     *,
     config: ResolverConfig | None = None,
 ) -> Trace:
     """Submit an event and process reactions until quiescence."""
-
-    if ruleset is None:
-        ruleset = Ruleset()
 
     resolver = Resolver(
         ruleset.before_rules,

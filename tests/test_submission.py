@@ -56,6 +56,11 @@ def test_submit_returns_trace_with_external_root_first() -> None:
     assert trace.root.status is ResolutionStatus.ACCEPTED
 
 
+def test_submit_requires_ruleset() -> None:
+    with pytest.raises(TypeError, match="ruleset"):
+        submit(World({}), Move("player", (1, 0)))  # type: ignore[call-arg]
+
+
 def test_reaction_event_records_rule_and_source() -> None:
     def mark_moved(
         world: World,
