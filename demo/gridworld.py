@@ -4,6 +4,7 @@ from enum import Enum, StrEnum
 import readchar
 
 from baffle import (
+    Delete,
     Engine,
     Event,
     ReactRule,
@@ -68,6 +69,7 @@ class Component(StrEnum):
     COLLECTABLE = "collectable"
     COLLECTOR = "collector"
     KEY = "key"
+    LOCK = "lock"
 
 
 class Status(StrEnum):
@@ -152,6 +154,21 @@ def push(world: World, event: EnterTile):
             yield Move(entity=entity, direction=event.direction)
 
 
+def unlock(world: World, event: EnterTile):
+    for entity, components in world.entities.items():
+        lock: str | None = components.get(Component.LOCK)  # type: ignore
+        if not lock:
+            continue
+
+        position = components.get(Component.POSITION)
+        count: int = world.get(event.entity, lock, default=0)  # type: ignore
+        if position == event.position and count > 0:
+            yield Set(entity=event.entity, component=lock, value=count - 1)
+            yield Set(entity=entity, component=Component.LOCK, value=False)
+            yield Set(entity=entity, component=Component.SOLID, value=False)
+            yield Set(entity=entity, component=Component.SYMBOL, value="O")
+
+
 def solid(world: World, event: EnterTile):
     for entity, components in world.entities.items():
         position = components.get(Component.POSITION)
@@ -191,10 +208,8 @@ def set_position(world: World, event: EnterTile):
 def collect_item(world: World, event: Collect):
     if event.taker in world and event.giver in world:
         taker_current: int = world.get(event.taker, event.item, default=0)  # type: ignore
-        giver_current: int = world.get(event.giver, event.item, default=0)  # type: ignore
-        if giver_current > 0:
-            yield Set(entity=event.taker, component=event.item, value=taker_current + 1)
-            yield Set(entity=event.taker, component=event.item, value=giver_current - 1)
+        yield Set(entity=event.taker, component=event.item, value=taker_current + 1)
+        yield Delete(entity=event.giver)
 
 
 # --------- #
@@ -285,6 +300,7 @@ def main():
             RequireRule(Collect, collect_item),
             RequireRule(Move, enter_tile),
             RequireRule(EnterTile, push),
+            RequireRule(EnterTile, unlock),
             RejectRule(EnterTile, solid),
             RejectRule(EnterTile, grid_bounds),
             RequireRule(EnterTile, set_position),
@@ -324,8 +340,19 @@ def main():
                 Component.POSITION: (1, 3),
                 Component.SYMBOL: "k",
                 Component.COLLECTABLE: Component.KEY,
-                Component.KEY: 1,
-            }
+            },
+            "door-1": {
+                Component.POSITION: (3, 3),
+                Component.SYMBOL: "X",
+                Component.SOLID: True,
+                Component.LOCK: Component.KEY,
+            },
+            "door-2": {
+                Component.POSITION: (4, 3),
+                Component.SYMBOL: "X",
+                Component.SOLID: True,
+                Component.LOCK: Component.KEY,
+            },
         },
     )
 
