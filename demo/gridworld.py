@@ -6,6 +6,7 @@ import readchar
 from baffle import (
     Engine,
     Event,
+    ReactRule,
     Rejection,
     RejectRule,
     RequireRule,
@@ -59,11 +60,14 @@ class Component(StrEnum):
     WIDTH = "width"
     HEIGHT = "height"
     STATUS = "status"
+    SYMBOL = "symbol"
     POSITION = "position"
     SOLID = "solid"
     PUSHABLE = "pushable"
     PUSHER = "pusher"
-    SYMBOL = "symbol"
+    COLLECTABLE = "collectable"
+    COLLECTOR = "collector"
+    KEY = "key"
 
 
 class Status(StrEnum):
@@ -92,6 +96,14 @@ class EnterTile(Event):
     entity: str
     position: tuple[int, int]
     direction: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True)
+class Collect(Event):
+    taker: str
+    giver: str
+    item: str
+    count: int = 1
 
 
 # ------- #
@@ -143,8 +155,19 @@ def push(world: World, event: EnterTile):
 def solid(world: World, event: EnterTile):
     for entity, components in world.entities.items():
         position = components.get(Component.POSITION)
-        if components.get(Component.SOLID) and position == event.position:
+        if position == event.position and components.get(Component.SOLID):
             return Rejection(f"solid {entity} at position {position}")
+
+
+def collect(world: World, event: EnterTile):
+    if not world.get(event.entity, Component.COLLECTOR, default=None):
+        return
+
+    for entity, components in world.entities.items():
+        position = components.get(Component.POSITION)
+        collectable: str = components.get(Component.COLLECTABLE)  # type: ignore
+        if position == event.position and collectable:
+            yield Collect(taker=event.entity, giver=entity, item=collectable)
 
 
 def grid_bounds(world: World, event: EnterTile):
@@ -163,6 +186,15 @@ def set_position(world: World, event: EnterTile):
         component="position",
         value=event.position,
     )
+
+
+def collect_item(world: World, event: Collect):
+    if event.taker in world and event.giver in world:
+        taker_current: int = world.get(event.taker, event.item, default=0)  # type: ignore
+        giver_current: int = world.get(event.giver, event.item, default=0)  # type: ignore
+        if giver_current > 0:
+            yield Set(entity=event.taker, component=event.item, value=taker_current + 1)
+            yield Set(entity=event.taker, component=event.item, value=giver_current - 1)
 
 
 # --------- #
@@ -250,11 +282,13 @@ def main():
     engine = Engine(
         [
             RejectRule(Event, game_over),
+            RequireRule(Collect, collect_item),
             RequireRule(Move, enter_tile),
             RequireRule(EnterTile, push),
             RejectRule(EnterTile, solid),
             RejectRule(EnterTile, grid_bounds),
             RequireRule(EnterTile, set_position),
+            ReactRule(EnterTile, collect),
         ]
     )
 
@@ -270,6 +304,7 @@ def main():
                 Component.POSITION: (1, 1),
                 Component.SOLID: True,
                 Component.PUSHER: True,
+                Component.COLLECTOR: True,
             },
             "block-1": {
                 Component.POSITION: (2, 1),
@@ -285,6 +320,12 @@ def main():
                 Component.PUSHER: True,
                 Component.PUSHABLE: True,
             },
+            "key-1": {
+                Component.POSITION: (1, 3),
+                Component.SYMBOL: "k",
+                Component.COLLECTABLE: Component.KEY,
+                Component.KEY: 1,
+            }
         },
     )
 
