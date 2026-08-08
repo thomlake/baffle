@@ -19,16 +19,17 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from baffle import (
-    Engine,
     Event,
     Rejected,
     Rejection,
-    RejectRule,
-    RequireRule,
-    ReactRule,
     ResolutionStatus,
+    Ruleset,
     Set,
     World,
+    react,
+    reject,
+    require,
+    submit,
 )
 
 
@@ -44,6 +45,7 @@ class EnterTile(Event):
     destination: tuple[int, int]
 
 
+@require
 def require_entry(world: World, event: Move) -> Iterable[Event]:
     yield EnterTile(
         entity=event.entity,
@@ -51,6 +53,7 @@ def require_entry(world: World, event: Move) -> Iterable[Event]:
     )
 
 
+@reject
 def reject_solid_tiles(world: World, event: EnterTile) -> Rejection | None:
     if event.destination == (1, 0):
         return Rejection("solid")
@@ -58,6 +61,7 @@ def reject_solid_tiles(world: World, event: EnterTile) -> Rejection | None:
     return None
 
 
+@require(after=("reject_solid_tiles",))
 def set_position(world: World, event: EnterTile) -> Iterable[Event]:
     yield Set(
         entity=event.entity,
@@ -66,6 +70,7 @@ def set_position(world: World, event: EnterTile) -> Iterable[Event]:
     )
 
 
+@react
 def record_failed_move(world: World, event: Rejected) -> Iterable[Event]:
     if isinstance(event.root, Move):
         yield Set(
@@ -75,13 +80,8 @@ def record_failed_move(world: World, event: Rejected) -> Iterable[Event]:
         )
 
 
-engine = Engine(
-    [
-        RequireRule(Move, require_entry),
-        RejectRule(EnterTile, reject_solid_tiles),
-        RequireRule(EnterTile, set_position),
-        ReactRule(Rejected, record_failed_move),
-    ]
+ruleset = Ruleset(
+    [require_entry, reject_solid_tiles, set_position, record_failed_move]
 )
 
 world = World(
@@ -92,9 +92,10 @@ world = World(
     }
 )
 
-trace = engine.submit(
+trace = submit(
     world,
     Move("player", (1, 0)),
+    ruleset,
 )
 
 assert trace.root.status is ResolutionStatus.ABORTED
@@ -106,7 +107,7 @@ assert world.snapshot() == {
 }
 ```
 
-The submitted `Move` requires `EnterTile`. The tile-entry event is rejected, so the entire transaction rolls back. The engine then exposes the failed transaction as a `Rejected` event, allowing a reaction to record the failed move in a new transaction.
+The submitted `Move` requires `EnterTile`. The tile-entry event is rejected, so the entire transaction rolls back. Submission processing then exposes the failed transaction as a `Rejected` event, allowing a reaction to record the failed move in a new transaction.
 
 ## Why Baffle?
 
@@ -145,19 +146,22 @@ Different mechanics attach to the level they actually understand.
 A movement rule knows that moving requires entering a tile:
 
 ```python
-RequireRule(Move, require_entry)
+@require
+def require_entry(world: World, event: Move): ...
 ```
 
 A solids rule knows that some tile entries are invalid:
 
 ```python
-RejectRule(EnterTile, reject_solids)
+@reject
+def reject_solids(world: World, event: EnterTile): ...
 ```
 
 A pressure-plate rule knows that successful tile entry may change a switch:
 
 ```python
-ReactRule(EnterTile, update_pressure_plate)
+@react
+def update_pressure_plate(world: World, event: EnterTile): ...
 ```
 
 None of these rules needs to know about the others.
@@ -388,11 +392,20 @@ Set(entity, component, value)
 
 Rules match events using `isinstance`, so a rule registered for a base event class also handles subclasses.
 
+Rule decorators infer the event type and default rule name from the callback. Decorated rules remain callable, and their original callback is available as `rule.run`.
+
+Direct construction requires both values explicitly:
+
+```python
+rule = RequireRule("require_position_update", Move, require_position_update)
+```
+
 ### Require rules
 
 A require rule emits events that must resolve before the current event may execute.
 
 ```python
+@require
 def require_position_update(
     world: World,
     event: Move,
@@ -402,9 +415,6 @@ def require_position_update(
         "position",
         event.destination,
     )
-
-
-rule = RequireRule(Move, require_position_update)
 ```
 
 All events emitted by one rule invocation are collected before any are resolved. The callback therefore observes one stable version of the world.
@@ -416,6 +426,7 @@ Required events resolve sequentially. Later rules may observe changes made by ea
 A reject rule returns a `Rejection` or `None`.
 
 ```python
+@reject
 def reject_missing_energy(
     world: World,
     event: Move,
@@ -426,9 +437,6 @@ def reject_missing_energy(
         return Rejection("insufficient_energy")
 
     return None
-
-
-rule = RejectRule(Move, reject_missing_energy)
 ```
 
 A rejection rolls back the entire current root transaction.
@@ -440,15 +448,13 @@ Reject rules represent modeled outcomes. Exceptions from event application or ru
 A react rule emits events after a transaction has committed or rolled back.
 
 ```python
+@react
 def damage_on_entry(
     world: World,
     event: EnterTile,
 ) -> Iterable[Event]:
     if event.destination == (4, 2):
         yield Damage(event.entity, 1)
-
-
-rule = ReactRule(EnterTile, damage_on_entry)
 ```
 
 Reaction emissions are new root transactions. They are not part of the transaction that triggered them.
@@ -457,10 +463,10 @@ All reactions to one transaction run before any emitted event is submitted. They
 
 Reaction roots are processed in FIFO order.
 
-React rules are also the only way to observe a `Rejected` event. The engine synthesizes one to report a failed transaction and hands it to react rules; it never resolves it. A require or reject rule registered for `Rejected` would therefore never run, so `Engine` rejects one at registration:
+React rules are also the only way to observe a `Rejected` event. Submission processing synthesizes one to report a failed transaction and hands it to react rules; it never resolves it. A require or reject rule registered for `Rejected` would therefore never run, so `Ruleset` rejects one during construction:
 
 ```python
-Engine([RequireRule(Rejected, ...)])
+Ruleset([RequireRule("invalid", Rejected, ...)])
 # TypeError: Rejected is observation-only; dispatch on it with ReactRule
 ```
 
@@ -469,19 +475,26 @@ Engine([RequireRule(Rejected, ...)])
 Require and reject rules share one ordered pre-execution phase.
 
 ```python
-engine = Engine(
-    [
-        RequireRule(Move, push_block),
-        RejectRule(Move, reject_if_still_blocked),
-    ]
-)
+@require
+def push_block(world: World, event: Move): ...
+
+
+@reject(after=("push_block",))
+def reject_if_still_blocked(world: World, event: Move): ...
 ```
 
-Here, the push requirement resolves first. The rejection rule then checks the updated transactional world.
+Here, the push requirement resolves first regardless of registration order. The rejection rule then checks the updated transactional world.
 
-React rules run in a separate phase. Their relative order is preserved independently.
+React rules run in a separate phase and are sorted independently. A rule cannot declare an ordering relationship with a rule in the other phase.
 
-Explicit rule priority is planned but not yet implemented. For now, registration order determines execution order.
+Rules without a constraint retain registration order. Names default to callback names and can be overridden when a stable or disambiguated name is needed:
+
+```python
+@require(name="movement.push", before=("collision",))
+def push_block(world: World, event: Move): ...
+```
+
+`Ruleset` validates names, references, phases, and cycles while compiling its immutable rule groups.
 
 ## Rejections
 
@@ -565,7 +578,7 @@ class ResolutionStatus(StrEnum):
 Top-level callers can inspect the submitted event through the returned trace:
 
 ```python
-trace = engine.submit(world, event)
+trace = submit(world, event, ruleset)
 
 if trace.root.status is not ResolutionStatus.ACCEPTED:
     ...
@@ -573,10 +586,10 @@ if trace.root.status is not ResolutionStatus.ACCEPTED:
 
 ## Tracing and provenance
 
-`Engine.submit` returns a `Trace`.
+`submit` returns a `Trace`.
 
 ```python
-trace = engine.submit(world, event)
+trace = submit(world, event, ruleset)
 ```
 
 A trace contains one entry for each root transaction:
@@ -638,7 +651,7 @@ class TraceEntry:
 
 Entries are root transactions only. Required events are not entries; they live in the `Resolution` tree of the entry that required them.
 
-This preserves the two causal relationships in the engine:
+This preserves the two causal relationships in submission processing:
 
 ```text
 require rule ──> child event in the same transaction
@@ -743,12 +756,14 @@ Reaction-generated events are separate root transactions. Earlier roots may rema
 Recursive requirements and reactions can otherwise continue indefinitely.
 
 ```python
-from baffle import ResolverConfig
+from baffle import ResolverConfig, submit
 
 
-engine = Engine(
-    rules,
-    resolver_config=ResolverConfig(
+trace = submit(
+    world,
+    event,
+    ruleset,
+    config=ResolverConfig(
         max_depth=100,
         max_events=1_000,
     ),
@@ -760,13 +775,13 @@ engine = Engine(
 
 Exceeding either limit raises `ResolutionLimitError`.
 
-Each call to `Engine.submit` receives a fresh event budget.
+Each call to `submit` receives a fresh event budget.
 
 A limit can be exceeded partway through a submission, after earlier root transactions have already committed. The error carries what happened, so a runaway cascade can be diagnosed rather than guessed at:
 
 ```python
 try:
-    engine.submit(world, event)
+    submit(world, event, ruleset, config=config)
 except ResolutionLimitError as error:
     error.event  # the event whose resolution hit the limit
     error.trace  # the root transactions that committed before it
@@ -776,7 +791,7 @@ The transaction that hit the limit is not among them. It is discarded like any o
 
 ## Lower-level resolution
 
-`Engine.submit` is the normal external entry point.
+`submit` is the normal external entry point.
 
 For tests or lower-level use, one event can be resolved without running reactions:
 

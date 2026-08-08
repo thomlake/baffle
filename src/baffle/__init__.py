@@ -1,6 +1,5 @@
 """A rules engine for composable event-driven simulations."""
 
-from baffle.engine import Engine, Reaction, Trace, TraceEntry
 from baffle.events import Create, Delete, Event, Rejected, Rejection, Set
 from baffle.resolution import (
     Requirement,
@@ -11,13 +10,22 @@ from baffle.resolution import (
     ResolverConfig,
     resolve,
 )
-from baffle.rules import ReactRule, RejectRule, RequireRule
+from baffle.rules import (
+    ReactRule,
+    RejectRule,
+    RequireRule,
+    Rule,
+    Ruleset,
+    react,
+    reject,
+    require,
+)
+from baffle.submission import Reaction, Trace, TraceEntry, submit
 from baffle.world import World
 
 __all__ = [
     "Create",
     "Delete",
-    "Engine",
     "Event",
     "ReactRule",
     "Reaction",
@@ -31,9 +39,15 @@ __all__ = [
     "ResolutionStatus",
     "Resolver",
     "ResolverConfig",
+    "Rule",
+    "Ruleset",
     "Set",
     "Trace",
     "TraceEntry",
     "World",
+    "react",
+    "reject",
+    "require",
     "resolve",
+    "submit",
 ]

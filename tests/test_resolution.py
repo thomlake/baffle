@@ -73,8 +73,8 @@ def test_required_events_record_rule_provenance() -> None:
             event.destination,
         )
 
-    step_rule = RequireRule(Step, require_move)
-    move_rule = RequireRule(Move, require_position)
+    step_rule = RequireRule("require_move", Step, require_move)
+    move_rule = RequireRule("require_position", Move, require_position)
 
     world = World(
         {
@@ -146,8 +146,8 @@ def test_later_rules_see_previous_required_events() -> None:
         world,
         Move("player", (1, 0)),
         [
-            RequireRule(Move, update_position),
-            RejectRule(Move, reject_wrong_position),
+            RequireRule("update_position", Move, update_position),
+            RejectRule("reject_wrong_position", Move, reject_wrong_position),
         ],
     )
 
@@ -175,7 +175,7 @@ def test_rule_order_is_shared_across_require_and_reject() -> None:
             event.destination,
         )
 
-    rejection_rule = RejectRule(Move, reject_wrong_position)
+    rejection_rule = RejectRule("reject_wrong_position", Move, reject_wrong_position)
     initial = {"player": {"position": (0, 0)}}
     world = World(initial)
 
@@ -184,7 +184,7 @@ def test_rule_order_is_shared_across_require_and_reject() -> None:
         Move("player", (1, 0)),
         [
             rejection_rule,
-            RequireRule(Move, update_position),
+            RequireRule("update_position", Move, update_position),
         ],
     )
 
@@ -222,7 +222,7 @@ def test_one_rule_observes_one_world_version() -> None:
     resolution = resolve(
         world,
         Move("player", (1, 0)),
-        [RequireRule(Move, update_health)],
+        [RequireRule("update_health", Move, update_health)],
     )
 
     assert resolution.status is ResolutionStatus.ACCEPTED
@@ -243,8 +243,8 @@ def test_direct_rejection_discards_required_changes() -> None:
     ) -> Rejection:
         return Rejection("blocked")
 
-    require_rule = RequireRule(Move, spend_health)
-    reject_rule = RejectRule(Move, reject_move)
+    require_rule = RequireRule("spend_health", Move, spend_health)
+    reject_rule = RejectRule("reject_move", Move, reject_move)
 
     initial = {"player": {"health": 3}}
     world = World(initial)
@@ -284,8 +284,8 @@ def test_child_rejection_aborts_parent() -> None:
     ) -> Rejection:
         return Rejection("blocked")
 
-    require_rule = RequireRule(Step, require_move)
-    reject_rule = RejectRule(Move, reject_move)
+    require_rule = RequireRule("require_move", Step, require_move)
+    reject_rule = RejectRule("reject_move", Move, reject_move)
 
     initial = {"player": {}}
     world = World(initial)
@@ -354,9 +354,9 @@ def test_requirements_after_rejection_are_not_attempted() -> None:
         world,
         Step("player", (1, 0)),
         [
-            RequireRule(Step, require_children),
-            RejectRule(First, reject_first),
-            RequireRule(Second, observe_second),
+            RequireRule("require_children", Step, require_children),
+            RejectRule("reject_first", First, reject_first),
+            RequireRule("observe_second", Second, observe_second),
         ],
     )
 
@@ -384,7 +384,7 @@ def test_rules_match_event_subclasses() -> None:
     resolution = resolve(
         world,
         event,
-        [RequireRule(Move, observe_move)],
+        [RequireRule("observe_move", Move, observe_move)],
     )
 
     assert resolution.status is ResolutionStatus.ACCEPTED
@@ -415,7 +415,7 @@ def test_resolver_rejects_react_rules() -> None:
         match="accepts only RequireRule and RejectRule",
     ):
         Resolver(
-            [ReactRule(Move, react)],  # type: ignore[list-item]
+            [ReactRule("react", Move, react)],  # type: ignore[list-item]
         )
 
 
@@ -471,7 +471,7 @@ def test_max_depth_zero_rejects_required_child() -> None:
         resolve(
             world,
             Move("player", (1, 0)),
-            [RequireRule(Move, require_position)],
+            [RequireRule("require_position", Move, require_position)],
             config=ResolverConfig(max_depth=0),
         )
 
@@ -491,7 +491,7 @@ def test_max_depth_allows_event_at_configured_depth() -> None:
     resolution = resolve(
         world,
         Chain(2),
-        [RequireRule(Chain, require_chain)],
+        [RequireRule("require_chain", Chain, require_chain)],
         config=ResolverConfig(max_depth=2),
     )
 
@@ -525,7 +525,7 @@ def test_max_events_counts_required_events() -> None:
         resolve(
             world,
             Move("player", (1, 0)),
-            [RequireRule(Move, require_position)],
+            [RequireRule("require_position", Move, require_position)],
             config=ResolverConfig(max_events=1),
         )
 
@@ -614,7 +614,7 @@ def test_directly_rejected_resolution_is_its_own_rejected_resolution() -> None:
     def reject_move(world: World, event: Move) -> Rejection:
         return Rejection("blocked")
 
-    rule = RejectRule(Move, reject_move)
+    rule = RejectRule("reject_move", Move, reject_move)
     resolution = resolve(
         World({}),
         Move("player", (1, 0)),
@@ -634,14 +634,14 @@ def test_aborted_resolution_points_at_rejected_requirement() -> None:
     def reject_step(world: World, event: Step) -> Rejection:
         return Rejection("solid")
 
-    reject_rule = RejectRule(Step, reject_step)
+    reject_rule = RejectRule("reject_step", Step, reject_step)
     move = Move("player", (1, 0))
     step = Step("player", (1, 0))
 
     resolution = resolve(
         World({}),
         move,
-        [RequireRule(Move, require_step), reject_rule],
+        [RequireRule("require_step", Move, require_step), reject_rule],
     )
 
     rejected = resolution.rejected_resolution
@@ -667,9 +667,9 @@ def test_rejected_resolution_descends_through_nested_aborts() -> None:
         World({"player": {}}),
         Step("player", (1, 0)),
         [
-            RequireRule(Step, require_move),
-            RequireRule(Move, require_set),
-            RejectRule(Set, reject_set),
+            RequireRule("require_move", Step, require_move),
+            RequireRule("require_set", Move, require_set),
+            RejectRule("reject_set", Set, reject_set),
         ],
     )
 

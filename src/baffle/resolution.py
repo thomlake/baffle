@@ -6,14 +6,11 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from baffle.events import Event, Rejection
-from baffle.rules import RejectRule, RequireRule
+from baffle.rules import BeforeRule, RejectRule, RequireRule
 from baffle.world import World
 
 if TYPE_CHECKING:
-    from baffle.engine import Trace
-
-
-type BeforeRule = RequireRule[Any] | RejectRule[Any]
+    from baffle.submission import Trace
 
 
 class ResolutionLimitError(RuntimeError):
@@ -37,8 +34,8 @@ class ResolutionLimitError(RuntimeError):
         # The event whose resolution hit the limit. Set by the resolver.
         self.event = event
 
-        # Root transactions that committed before the limit. Only the engine
-        # tracks these, so it attaches them on the way out.
+        # Root transactions that committed before the limit. Submission
+        # processing tracks these and attaches them on the way out.
         self.trace = trace
 
 

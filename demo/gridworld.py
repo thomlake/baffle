@@ -5,14 +5,15 @@ import readchar
 
 from baffle import (
     Delete,
-    Engine,
     Event,
-    ReactRule,
     Rejection,
-    RejectRule,
-    RequireRule,
+    Ruleset,
     Set,
     World,
+    react,
+    reject,
+    require,
+    submit,
 )
 
 
@@ -122,11 +123,13 @@ def get_grid_bounds(world: World) -> Vec2:
 # Rules #
 # ----- #
 
+@reject
 def game_over(world: World, event: Event):
     if (status := world.get(Entity.GAME, Component.STATUS)) != Status.RUNNING:
         return Rejection(f"GAME OVER (status: {status})")
 
 
+@require
 def enter_tile(world: World, event: Move):
     position: Vec2 = world.get(event.entity, Component.POSITION)  # type: ignore
     destination = add(event.direction, position)
@@ -137,6 +140,7 @@ def enter_tile(world: World, event: Move):
     )
 
 
+@require
 def push(world: World, event: EnterTile):
     if not (
         event.direction
@@ -154,6 +158,7 @@ def push(world: World, event: EnterTile):
             yield Move(entity=entity, direction=event.direction)
 
 
+@require(after=("push",))
 def unlock(world: World, event: EnterTile):
     for entity, components in world.entities.items():
         lock: str | None = components.get(Component.LOCK)  # type: ignore
@@ -169,6 +174,7 @@ def unlock(world: World, event: EnterTile):
             yield Set(entity=entity, component=Component.SYMBOL, value="O")
 
 
+@reject(after=("unlock",))
 def solid(world: World, event: EnterTile):
     for entity, components in world.entities.items():
         position = components.get(Component.POSITION)
@@ -176,6 +182,7 @@ def solid(world: World, event: EnterTile):
             return Rejection(f"solid {entity} at position {position}")
 
 
+@react
 def collect(world: World, event: EnterTile):
     if not world.get(event.entity, Component.COLLECTOR, default=None):
         return
@@ -187,6 +194,7 @@ def collect(world: World, event: EnterTile):
             yield Collect(taker=event.entity, giver=entity, item=collectable)
 
 
+@reject(after=("solid",))
 def grid_bounds(world: World, event: EnterTile):
     w, h = get_grid_bounds(world)
     x, y = event.position
@@ -197,6 +205,7 @@ def grid_bounds(world: World, event: EnterTile):
     return Rejection(f"tile {x},{y} out of bounds for {w}x{h} (WxH) grid")
 
 
+@require(after=("grid_bounds",))
 def set_position(world: World, event: EnterTile):
     yield Set(
         entity=event.entity,
@@ -205,6 +214,7 @@ def set_position(world: World, event: EnterTile):
     )
 
 
+@require
 def collect_item(world: World, event: Collect):
     if event.taker in world and event.giver in world:
         taker_current: int = world.get(event.taker, event.item, default=0)  # type: ignore
@@ -294,17 +304,17 @@ def read_input(world: World):
 
 
 def main():
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            RejectRule(Event, game_over),
-            RequireRule(Collect, collect_item),
-            RequireRule(Move, enter_tile),
-            RequireRule(EnterTile, push),
-            RequireRule(EnterTile, unlock),
-            RejectRule(EnterTile, solid),
-            RejectRule(EnterTile, grid_bounds),
-            RequireRule(EnterTile, set_position),
-            ReactRule(EnterTile, collect),
+            game_over,
+            collect_item,
+            enter_tile,
+            push,
+            unlock,
+            solid,
+            grid_bounds,
+            set_position,
+            collect,
         ]
     )
 
@@ -371,7 +381,7 @@ def main():
             print("terminating...")
             return
 
-        trace = engine.submit(world, event)
+        trace = submit(world, event, ruleset)
         print("Trace:")
         print(trace)
         print()

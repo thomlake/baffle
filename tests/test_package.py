@@ -18,16 +18,17 @@ def test_readme_example_runs() -> None:
     from dataclasses import dataclass
 
     from baffle import (
-        Engine,
         Event,
         Rejected,
         Rejection,
-        RejectRule,
-        RequireRule,
-        ReactRule,
         ResolutionStatus,
+        Ruleset,
         Set,
         World,
+        react,
+        reject,
+        require,
+        submit,
     )
 
     @dataclass(frozen=True)
@@ -40,12 +41,14 @@ def test_readme_example_runs() -> None:
         entity: str
         destination: tuple[int, int]
 
+    @require
     def require_entry(world: World, event: Move) -> Iterable[Event]:
         yield EnterTile(
             entity=event.entity,
             destination=event.destination,
         )
 
+    @reject
     def reject_solid_tiles(
         world: World,
         event: EnterTile,
@@ -55,6 +58,7 @@ def test_readme_example_runs() -> None:
 
         return None
 
+    @require(after=("reject_solid_tiles",))
     def update_position(world: World, event: EnterTile) -> Iterable[Event]:
         yield Set(
             entity=event.entity,
@@ -62,6 +66,7 @@ def test_readme_example_runs() -> None:
             value=event.destination,
         )
 
+    @react
     def record_failed_move(world: World, event: Rejected) -> Iterable[Event]:
         if isinstance(event.root, Move):
             yield Set(
@@ -70,18 +75,13 @@ def test_readme_example_runs() -> None:
                 value=True,
             )
 
-    engine = Engine(
-        [
-            RequireRule(Move, require_entry),
-            RejectRule(EnterTile, reject_solid_tiles),
-            RequireRule(EnterTile, update_position),
-            ReactRule(Rejected, record_failed_move),
-        ]
+    ruleset = Ruleset(
+        [require_entry, reject_solid_tiles, update_position, record_failed_move]
     )
 
     world = World({"player": {"position": (0, 0)}})
 
-    trace = engine.submit(world, Move("player", (1, 0)))
+    trace = submit(world, Move("player", (1, 0)), ruleset)
 
     assert trace.root.status is ResolutionStatus.ABORTED
     assert world.snapshot() == {

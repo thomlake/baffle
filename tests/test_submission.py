@@ -3,14 +3,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from baffle.engine import Engine, Reaction, Trace
+from baffle.submission import Reaction, Trace, submit
 from baffle.events import Event, Rejected, Rejection, Set
 from baffle.resolution import (
     ResolutionLimitError,
     ResolutionStatus,
     ResolverConfig,
 )
-from baffle.rules import ReactRule, RejectRule, RequireRule
+from baffle.rules import ReactRule, RejectRule, RequireRule, Ruleset
 from baffle.world import World
 
 
@@ -31,12 +31,22 @@ class Marker(Event):
     name: str
 
 
+def _submit(
+    ruleset: Ruleset,
+    world: World,
+    event: Event,
+    *,
+    config: ResolverConfig | None = None,
+) -> Trace:
+    return submit(world, event, ruleset, config=config)
+
+
 def test_submit_returns_trace_with_external_root_first() -> None:
-    engine = Engine()
+    ruleset = Ruleset()
     world = World({})
     move = Move("player", (1, 0))
 
-    trace = engine.submit(world, move)
+    trace = _submit(ruleset, world, move)
 
     assert isinstance(trace, Trace)
     assert len(trace.entries) == 1
@@ -53,12 +63,12 @@ def test_reaction_event_records_rule_and_source() -> None:
     ) -> Iterable[Event]:
         yield Set(event.entity, "moved", True)
 
-    reaction_rule = ReactRule(Move, mark_moved)
-    engine = Engine([reaction_rule])
+    reaction_rule = ReactRule("mark_moved", Move, mark_moved)
+    ruleset = Ruleset([reaction_rule])
     world = World({"player": {}})
     move = Move("player", (1, 0))
 
-    trace = engine.submit(world, move)
+    trace = _submit(ruleset, world, move)
 
     assert len(trace.entries) == 2
 
@@ -97,11 +107,11 @@ def test_accepted_events_react_child_before_parent() -> None:
         observed.append(event)
         return ()
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            RequireRule(Step, require_move),
-            RequireRule(Move, require_position),
-            ReactRule(Event, observe),
+            RequireRule("require_move", Step, require_move),
+            RequireRule("require_position", Move, require_position),
+            ReactRule("observe", Event, observe),
         ]
     )
     world = World({"player": {"position": (0, 0)}})
@@ -110,7 +120,7 @@ def test_accepted_events_react_child_before_parent() -> None:
     move = Move("player", (1, 0))
     set_position = Set("player", "position", (1, 0))
 
-    engine.submit(world, step)
+    _submit(ruleset, world, step)
 
     assert observed == [
         set_position,
@@ -137,15 +147,16 @@ def test_reactions_observe_committed_state() -> None:
         observations.append(position)
         return ()
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            RequireRule(Move, require_position),
-            ReactRule(Move, observe),
+            RequireRule("require_position", Move, require_position),
+            ReactRule("observe", Move, observe),
         ]
     )
     world = World({"player": {"position": (0, 0)}})
 
-    engine.submit(
+    _submit(
+        ruleset,
         world,
         Move("player", (1, 0)),
     )
@@ -175,11 +186,11 @@ def test_rejection_emits_one_rejected_event_with_root_and_cause() -> None:
         observed.append(event)
         return ()
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            RequireRule(Step, require_move),
-            RejectRule(Move, reject_move),
-            ReactRule(Rejected, observe),
+            RequireRule("require_move", Step, require_move),
+            RejectRule("reject_move", Move, reject_move),
+            ReactRule("observe", Rejected, observe),
         ]
     )
     world = World({"player": {}})
@@ -187,7 +198,7 @@ def test_rejection_emits_one_rejected_event_with_root_and_cause() -> None:
     step = Step("player", (1, 0))
     move = Move("player", (1, 0))
 
-    trace = engine.submit(world, step)
+    trace = _submit(ruleset, world, step)
 
     assert trace.root.status is ResolutionStatus.ABORTED
     assert observed == [
@@ -206,15 +217,15 @@ def test_directly_rejected_root_has_rejected_status() -> None:
     ) -> Rejection:
         return Rejection("blocked")
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            RejectRule(Move, reject_move),
+            RejectRule("reject_move", Move, reject_move),
         ]
     )
     world = World({"player": {}})
     move = Move("player", (1, 0))
 
-    trace = engine.submit(world, move)
+    trace = _submit(ruleset, world, move)
 
     assert trace.root.status is ResolutionStatus.REJECTED
     assert trace.root.rejection == Rejection("blocked")
@@ -233,17 +244,17 @@ def test_rejected_reaction_records_rejected_as_source() -> None:
     ) -> Iterable[Event]:
         yield Set("player", "blocked", True)
 
-    reaction_rule = ReactRule(Rejected, mark_blocked)
-    engine = Engine(
+    reaction_rule = ReactRule("mark_blocked", Rejected, mark_blocked)
+    ruleset = Ruleset(
         [
-            RejectRule(Move, reject_move),
+            RejectRule("reject_move", Move, reject_move),
             reaction_rule,
         ]
     )
     world = World({"player": {}})
     move = Move("player", (1, 0))
 
-    trace = engine.submit(world, move)
+    trace = _submit(ruleset, world, move)
 
     expected_source = Rejected(
         root=move,
@@ -282,16 +293,17 @@ def test_rejection_reactions_observe_rolled_back_state() -> None:
         observations.append(health)
         return ()
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            RequireRule(Move, spend_health),
-            RejectRule(Move, reject_move),
-            ReactRule(Rejected, observe),
+            RequireRule("spend_health", Move, spend_health),
+            RejectRule("reject_move", Move, reject_move),
+            ReactRule("observe", Rejected, observe),
         ]
     )
     world = World({"player": {"health": 3}})
 
-    engine.submit(
+    _submit(
+        ruleset,
         world,
         Move("player", (1, 0)),
     )
@@ -322,16 +334,17 @@ def test_rolled_back_events_do_not_trigger_accepted_reactions() -> None:
         observed.append(event)
         return ()
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            RequireRule(Move, spend_health),
-            RejectRule(Move, reject_move),
-            ReactRule(Set, observe_set),
+            RequireRule("spend_health", Move, spend_health),
+            RejectRule("reject_move", Move, reject_move),
+            ReactRule("observe_set", Set, observe_set),
         ]
     )
     world = World({"player": {"health": 3}})
 
-    engine.submit(
+    _submit(
+        ruleset,
         world,
         Move("player", (1, 0)),
     )
@@ -354,16 +367,16 @@ def test_reaction_roots_are_processed_fifo() -> None:
         if event.name == "a":
             yield Marker("c")
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            ReactRule(Move, emit_siblings),
-            ReactRule(Marker, emit_child),
+            ReactRule("emit_siblings", Move, emit_siblings),
+            ReactRule("emit_child", Marker, emit_child),
         ]
     )
     world = World({})
     move = Move("player", (1, 0))
 
-    trace = engine.submit(world, move)
+    trace = _submit(ruleset, world, move)
 
     assert [
         entry.resolution.event
@@ -397,15 +410,16 @@ def test_all_reactions_to_one_resolution_observe_same_state() -> None:
         )
         return ()
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            ReactRule(Move, first),
-            ReactRule(Move, second),
+            ReactRule("first", Move, first),
+            ReactRule("second", Move, second),
         ]
     )
     world = World({"player": {}})
 
-    engine.submit(
+    _submit(
+        ruleset,
         world,
         Move("player", (1, 0)),
     )
@@ -414,17 +428,14 @@ def test_all_reactions_to_one_resolution_observe_same_state() -> None:
     assert world.get("player", "marked") is True
 
 
-def test_engine_event_budget_spans_reaction_roots() -> None:
+def test_submission_event_budget_spans_reaction_roots() -> None:
     def emit_marker(
         world: World,
         event: Move,
     ) -> Iterable[Event]:
         yield Marker("reaction")
 
-    engine = Engine(
-        [ReactRule(Move, emit_marker)],
-        resolver_config=ResolverConfig(max_events=1),
-    )
+    ruleset = Ruleset([ReactRule("emit_marker", Move, emit_marker)])
     world = World({})
     move = Move("player", (1, 0))
 
@@ -432,60 +443,36 @@ def test_engine_event_budget_spans_reaction_roots() -> None:
         ResolutionLimitError,
         match="Maximum event count exceeded: 1",
     ):
-        engine.submit(world, move)
+        _submit(
+            ruleset,
+            world,
+            move,
+            config=ResolverConfig(max_events=1),
+        )
 
 
-def test_engine_gets_fresh_budget_for_each_submission() -> None:
-    engine = Engine(
-        resolver_config=ResolverConfig(max_events=1),
-    )
+def test_submit_gets_fresh_budget_for_each_submission() -> None:
+    ruleset = Ruleset()
     world = World({})
+    config = ResolverConfig(max_events=1)
 
-    first = engine.submit(world, Marker("first"))
-    second = engine.submit(world, Marker("second"))
+    first = _submit(ruleset, world, Marker("first"), config=config)
+    second = _submit(ruleset, world, Marker("second"), config=config)
 
     assert first.root.status is ResolutionStatus.ACCEPTED
     assert second.root.status is ResolutionStatus.ACCEPTED
 
 
-def test_rule_can_be_added_after_construction() -> None:
-    observed: list[Move] = []
-
-    def observe(
-        world: World,
-        event: Move,
-    ) -> Iterable[Event]:
-        observed.append(event)
-        return ()
-
-    engine = Engine()
-    engine.add(ReactRule(Move, observe))
-
-    world = World({})
-    move = Move("player", (1, 0))
-
-    engine.submit(world, move)
-
-    assert observed == [move]
-
-
-def test_engine_rejects_unknown_rule_at_construction() -> None:
+def test_ruleset_rejects_unknown_rule_at_construction() -> None:
     with pytest.raises(TypeError, match="Unknown rule type"):
-        Engine([object()])  # type: ignore[list-item]
-
-
-def test_engine_rejects_unknown_rule_when_added() -> None:
-    engine = Engine()
-
-    with pytest.raises(TypeError, match="Unknown rule type"):
-        engine.add(object())  # type: ignore[arg-type]
+        Ruleset([object()])  # type: ignore[list-item]
 
 
 def test_external_root_has_no_parent() -> None:
-    engine = Engine()
+    ruleset = Ruleset()
     world = World({})
 
-    trace = engine.submit(world, Move("player", (1, 0)))
+    trace = _submit(ruleset, world, Move("player", (1, 0)))
 
     assert trace.entries[0].parent is None
 
@@ -505,15 +492,15 @@ def test_reaction_roots_record_parent_entry() -> None:
         if event.name == "a":
             yield Marker("c")
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            ReactRule(Move, emit_siblings),
-            ReactRule(Marker, emit_child),
+            ReactRule("emit_siblings", Move, emit_siblings),
+            ReactRule("emit_child", Marker, emit_child),
         ]
     )
     world = World({})
 
-    trace = engine.submit(world, Move("player", (1, 0)))
+    trace = _submit(ruleset, world, Move("player", (1, 0)))
 
     # move -> [a, b], a -> [c]
     assert [entry.parent for entry in trace.entries] == [None, 0, 0, 1]
@@ -532,15 +519,15 @@ def test_parent_disambiguates_equal_events_from_different_roots() -> None:
     ) -> Iterable[Event]:
         yield Move(event.entity, event.destination)
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            ReactRule(Step, emit_move),
-            ReactRule(Move, emit_marker),
+            ReactRule("emit_move", Step, emit_move),
+            ReactRule("emit_marker", Move, emit_marker),
         ]
     )
     world = World({})
 
-    trace = engine.submit(world, Step("player", (1, 0)))
+    trace = _submit(ruleset, world, Step("player", (1, 0)))
 
     # Both Move roots emit an identical Marker, so only the parent index
     # distinguishes which transaction produced which.
@@ -559,14 +546,16 @@ def test_limit_error_carries_committed_roots_and_failing_event() -> None:
     ) -> Iterable[Event]:
         yield Marker(event.name + "!")
 
-    engine = Engine(
-        [ReactRule(Marker, cascade)],
-        resolver_config=ResolverConfig(max_events=3),
-    )
+    ruleset = Ruleset([ReactRule("cascade", Marker, cascade)])
     world = World({})
 
     with pytest.raises(ResolutionLimitError) as error:
-        engine.submit(world, Marker("a"))
+        _submit(
+            ruleset,
+            world,
+            Marker("a"),
+            config=ResolverConfig(max_events=3),
+        )
 
     assert error.value.event == Marker("a!!!")
 
@@ -587,14 +576,16 @@ def test_limit_error_trace_reflects_committed_state() -> None:
         yield Set("counter", event.name, True)
         yield Marker(event.name + "!")
 
-    engine = Engine(
-        [ReactRule(Marker, cascade)],
-        resolver_config=ResolverConfig(max_events=4),
-    )
+    ruleset = Ruleset([ReactRule("cascade", Marker, cascade)])
     world = World({"counter": {}})
 
     with pytest.raises(ResolutionLimitError) as error:
-        engine.submit(world, Marker("a"))
+        _submit(
+            ruleset,
+            world,
+            Marker("a"),
+            config=ResolverConfig(max_events=4),
+        )
 
     trace = error.value.trace
     assert trace is not None
@@ -613,7 +604,7 @@ def test_limit_error_trace_reflects_committed_state() -> None:
     assert world.snapshot() == {"counter": {"a": True, "a!": True}}
 
 
-def test_engine_rejects_require_rule_on_rejected() -> None:
+def test_ruleset_rejects_require_rule_on_rejected() -> None:
     def require_anything(
         world: World,
         event: Rejected,
@@ -621,10 +612,10 @@ def test_engine_rejects_require_rule_on_rejected() -> None:
         return ()
 
     with pytest.raises(TypeError, match="Rejected is observation-only"):
-        Engine([RequireRule(Rejected, require_anything)])
+        Ruleset([RequireRule("require_anything", Rejected, require_anything)])
 
 
-def test_engine_rejects_reject_rule_on_rejected() -> None:
+def test_ruleset_rejects_reject_rule_on_rejected() -> None:
     def reject_anything(
         world: World,
         event: Rejected,
@@ -632,10 +623,10 @@ def test_engine_rejects_reject_rule_on_rejected() -> None:
         return None
 
     with pytest.raises(TypeError, match="Rejected is observation-only"):
-        Engine([RejectRule(Rejected, reject_anything)])
+        Ruleset([RejectRule("reject_anything", Rejected, reject_anything)])
 
 
-def test_engine_rejects_before_rule_on_rejected_subclass() -> None:
+def test_ruleset_rejects_before_rule_on_rejected_subclass() -> None:
     @dataclass(frozen=True)
     class Vetoed(Rejected):
         pass
@@ -647,10 +638,10 @@ def test_engine_rejects_before_rule_on_rejected_subclass() -> None:
         return ()
 
     with pytest.raises(TypeError, match="Rejected is observation-only"):
-        Engine([RequireRule(Vetoed, require_anything)])
+        Ruleset([RequireRule("require_anything", Vetoed, require_anything)])
 
 
-def test_engine_allows_react_rule_on_rejected() -> None:
+def test_ruleset_allows_react_rule_on_rejected() -> None:
     observed: list[Rejected] = []
 
     def reject_move(
@@ -666,15 +657,15 @@ def test_engine_allows_react_rule_on_rejected() -> None:
         observed.append(event)
         return ()
 
-    engine = Engine(
+    ruleset = Ruleset(
         [
-            RejectRule(Move, reject_move),
-            ReactRule(Rejected, observe),
+            RejectRule("reject_move", Move, reject_move),
+            ReactRule("observe", Rejected, observe),
         ]
     )
     move = Move("player", (1, 0))
 
-    engine.submit(World({}), move)
+    _submit(ruleset, World({}), move)
 
     assert observed == [
         Rejected(
@@ -685,7 +676,7 @@ def test_engine_allows_react_rule_on_rejected() -> None:
     ]
 
 
-def test_engine_allows_catch_all_before_rule() -> None:
+def test_ruleset_allows_catch_all_before_rule() -> None:
     """Event is not a subclass of Rejected, so catch-alls are not dead."""
 
     observed: list[Event] = []
@@ -697,9 +688,9 @@ def test_engine_allows_catch_all_before_rule() -> None:
         observed.append(event)
         return ()
 
-    engine = Engine([RequireRule(Event, observe)])
+    ruleset = Ruleset([RequireRule("observe", Event, observe)])
     move = Move("player", (1, 0))
 
-    engine.submit(World({}), move)
+    _submit(ruleset, World({}), move)
 
     assert observed == [move]
