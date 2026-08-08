@@ -274,7 +274,7 @@ def format_world(world: World):
     return grid_text
 
 
-def get_input_event(world: World):
+def read_input(world: World):
     while True:
         print("Select: ", end="", flush=True)
         key = readchar.readkey()
@@ -364,7 +364,7 @@ def main():
     print(format_world(world))
     while True:
         print()
-        event = get_input_event(world)
+        event = read_input(world)
         print(event)
         print()
         if not event:

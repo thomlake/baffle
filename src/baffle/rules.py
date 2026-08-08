@@ -114,11 +114,7 @@ def sort_rules(rules: Iterable[Rule]) -> tuple[Rule, ...]:
                 heapq.heappush(ready, target)
 
     if len(result) != len(rules):
-        unresolved = {
-            index
-            for index, degree in enumerate(indegree)
-            if degree > 0
-        }
+        unresolved = {index for index, degree in enumerate(indegree) if degree > 0}
 
         details = []
         for child in unresolved:
