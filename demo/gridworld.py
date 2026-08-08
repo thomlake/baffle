@@ -1,6 +1,5 @@
 from dataclasses import dataclass
-from enum import Enum
-from typing import cast
+from enum import Enum, StrEnum
 
 import readchar
 
@@ -47,29 +46,30 @@ def subtract(a: Vec2, b: Vec2) -> Vec2:
     return a[0] - b[0], a[1] - b[1]
 
 
-# -------- #
-# Entities #
-# -------- #
-
-GAME = "game"
-PLAYER = "player"
-
 # ---------- #
-# Components #
+# Game Vocab #
 # ---------- #
 
-WIDTH = "width"
-HEIGHT = "height"
-STATUS = "status"
-STATUS_RUNNING = "running"
-STATUS_SUCCESS = "success"
-STATUS_FAILURE = "failure"
+class Entity(StrEnum):
+    GAME = "game"
+    PLAYER = "player"
 
-POSITION = "position"
-SOLID = "solid"
-PUSHABLE = "pushable"
-PUSHER = "pusher"
-SYMBOL = "symbol"
+
+class Component(StrEnum):
+    WIDTH = "width"
+    HEIGHT = "height"
+    STATUS = "status"
+    POSITION = "position"
+    SOLID = "solid"
+    PUSHABLE = "pushable"
+    PUSHER = "pusher"
+    SYMBOL = "symbol"
+
+
+class Status(StrEnum):
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILURE = "failure"
 
 
 # ------ #
@@ -79,7 +79,7 @@ SYMBOL = "symbol"
 @dataclass(frozen=True)
 class Move(Event):
     entity: str
-    destination: Vec2
+    direction: Vec2
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,7 @@ class Wait(Event):
 @dataclass(frozen=True)
 class EnterTile(Event):
     entity: str
-    destination: tuple[int, int]
+    position: tuple[int, int]
     direction: tuple[int, int] | None = None
 
 
@@ -99,8 +99,8 @@ class EnterTile(Event):
 # ------- #
 
 def get_grid_bounds(world: World) -> Vec2:
-    w = cast(int, world.get(GAME, WIDTH))
-    h = cast(int, world.get(GAME, HEIGHT))
+    w: int = world.get(Entity.GAME, Component.WIDTH)  # type: ignore
+    h: int = world.get(Entity.GAME, Component.HEIGHT)  # type: ignore
     return w, h
 
 
@@ -109,51 +109,47 @@ def get_grid_bounds(world: World) -> Vec2:
 # ----- #
 
 def game_over(world: World, event: Event):
-    if (status := world.get(GAME, STATUS)) != STATUS_RUNNING:
+    if (status := world.get(Entity.GAME, Component.STATUS)) != Status.RUNNING:
         return Rejection(f"GAME OVER (status: {status})")
 
 
 def enter_tile(world: World, event: Move):
-    position: Vec2 = world.get(event.entity, POSITION, default=None)  # type: ignore
-    direction = subtract(event.destination, position) if position else None
+    position: Vec2 = world.get(event.entity, Component.POSITION)  # type: ignore
+    destination = add(event.direction, position)
     yield EnterTile(
         entity=event.entity,
-        destination=event.destination,
-        direction=direction,
+        position=destination,
+        direction=event.direction,
     )
 
 
 def push(world: World, event: EnterTile):
     if not (
         event.direction
-        and world.get(event.entity, PUSHER, default=None)
-        and world.get(event.entity, SOLID, default=None)
+        and world.get(event.entity, Component.PUSHER, default=None)
+        and world.get(event.entity, Component.SOLID, default=None)
     ):
         return
 
     for entity, components in world.entities.items():
         if (
-            SOLID in components
-            and PUSHABLE in components
-            and (position := cast(Vec2, components.get(POSITION)))
-            and position == event.destination
+            components.get(Component.POSITION) == event.position
+            and components.get(Component.SOLID)
+            and components.get(Component.PUSHABLE)
         ):
-            yield Move(entity, add(position, event.direction))
+            yield Move(entity=entity, direction=event.direction)
 
 
 def solid(world: World, event: EnterTile):
-    for entity, component in world.entities.items():
-        if (
-            SOLID in component
-            and (position := component.get(POSITION))
-            and position == event.destination
-        ):
+    for entity, components in world.entities.items():
+        position = components.get(Component.POSITION)
+        if components.get(Component.SOLID) and position == event.position:
             return Rejection(f"solid {entity} at position {position}")
 
 
 def grid_bounds(world: World, event: EnterTile):
     w, h = get_grid_bounds(world)
-    x, y = event.destination
+    x, y = event.position
 
     if 0 <= x < w and 0 <= y < h:
         return
@@ -165,7 +161,7 @@ def set_position(world: World, event: EnterTile):
     yield Set(
         entity=event.entity,
         component="position",
-        value=event.destination,
+        value=event.position,
     )
 
 
@@ -217,10 +213,9 @@ def format_world(world: World):
     legend: dict[str, list[str]] = {}
 
     for entity, components in reversed(list(world.entities.items())):
-        if (
-            (position := cast(Vec2 | None, components.get(POSITION)))
-            and (symbol := cast(str | None, components.get(SYMBOL)))
-        ):
+        position: Vec2 | None = components.get(Component.POSITION)  # type: ignore
+        symbol: str | None = components.get(Component.SYMBOL)  # type: ignore
+        if position and symbol:
             x, y = position
             grid[y][x] = symbol
             if symbols := legend.get(symbol):
@@ -234,23 +229,21 @@ def format_world(world: World):
 
 def get_input_event(world: World):
     while True:
-        print("Select action: ", end="", flush=True)
+        print("Select: ", end="", flush=True)
         key = readchar.readkey()
-
+        # print()
         if action := CONTROLS.get(key):
             match action:
-                case ("quit"):
+                case ("quit",):
                     return None
-                case ("wait"):
-                    return Wait(PLAYER)
+                case ("wait",):
+                    return Wait(Entity.PLAYER)
                 case ("move", direction):
-                    position = cast(Vec2, world.get(PLAYER, POSITION))
-                    return Move(PLAYER, destination=add(position, direction.value))
+                    return Move(Entity.PLAYER, direction=direction.value)
                 case _:
                     raise ValueError(f"unknown action {action!r}")
 
-        # Undefined key: ignore/reject and keep reading.
-        print(f"\n- invalid input {key!r}", flush=True)
+        print(f"- invalid input {key!r}", flush=True)
 
 
 def main():
@@ -267,22 +260,30 @@ def main():
 
     world = World(
         {
-            GAME: {
-                WIDTH: 9,
-                HEIGHT: 5,
-                STATUS: STATUS_RUNNING,
+            Entity.GAME: {
+                Component.WIDTH: 9,
+                Component.HEIGHT: 5,
+                Component.STATUS: Status.RUNNING,
             },
-            PLAYER: {
-                SYMBOL: "@",
-                POSITION: (1, 1),
-                SOLID: True,
-                PUSHER: True,
+            Entity.PLAYER: {
+                Component.SYMBOL: "@",
+                Component.POSITION: (1, 1),
+                Component.SOLID: True,
+                Component.PUSHER: True,
             },
             "block-1": {
-                POSITION: (2, 1),
-                SYMBOL: "#",
-                SOLID: True,
-                PUSHABLE: True,
+                Component.POSITION: (2, 1),
+                Component.SYMBOL: "#",
+                Component.SOLID: True,
+                Component.PUSHER: True,
+                Component.PUSHABLE: True,
+            },
+            "block-2": {
+                Component.POSITION: (3, 1),
+                Component.SYMBOL: "#",
+                Component.SOLID: True,
+                Component.PUSHER: True,
+                Component.PUSHABLE: True,
             },
         },
     )
@@ -296,7 +297,7 @@ def main():
     while True:
         print()
         event = get_input_event(world)
-        print()
+        print(event)
         print()
         if not event:
             print("terminating...")
